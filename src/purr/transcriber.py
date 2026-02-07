@@ -35,6 +35,7 @@ async def transcribe(
 
         async def send_audio():
             try:
+                chunks_since_commit = 0
                 async for chunk in audio_stream:
                     await ws.send(
                         json.dumps(
@@ -44,6 +45,17 @@ async def transcribe(
                             }
                         )
                     )
+                    chunks_since_commit += 1
+
+                    # Commit periodically so the server starts transcribing.
+                    # At 480ms chunks, ~5 chunks ≈ 2.4s of audio per commit.
+                    if chunks_since_commit >= 5:
+                        await ws.send(
+                            json.dumps(
+                                {"type": "input_audio_buffer.commit"}
+                            )
+                        )
+                        chunks_since_commit = 0
             except asyncio.CancelledError:
                 # Send commit on shutdown so server can finalize
                 with contextlib.suppress(Exception):

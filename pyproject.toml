@@ -9,6 +9,10 @@ dependencies = [
     "websockets",
     "click",
     "numpy",
+]
+
+[project.optional-dependencies]
+server = [
     "vllm>=0.15.1",
     "mistral-common[audio]>=1.9.0",
 ]

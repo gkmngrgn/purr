@@ -2136,22 +2136,27 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
-    { name = "mistral-common", extra = ["audio"] },
     { name = "numpy" },
     { name = "sounddevice" },
-    { name = "vllm" },
     { name = "websockets" },
+]
+
+[package.optional-dependencies]
+server = [
+    { name = "mistral-common", extra = ["audio"] },
+    { name = "vllm" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "click" },
-    { name = "mistral-common", extras = ["audio"], specifier = ">=1.9.0" },
+    { name = "mistral-common", extras = ["audio"], marker = "extra == 'server'", specifier = ">=1.9.0" },
     { name = "numpy" },
     { name = "sounddevice" },
-    { name = "vllm", specifier = ">=0.15.1" },
+    { name = "vllm", marker = "extra == 'server'", specifier = ">=0.15.1" },
     { name = "websockets" },
 ]
+provides-extras = ["server"]
 
 [[package]]
 name = "py-cpuinfo"

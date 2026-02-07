@@ -1,7 +1,28 @@
 [project]
-name = "puta"
+name = "purr"
 version = "0.1.0"
-description = "Add your description here"
+description = "Real-time speech transcription CLI using Voxtral via vLLM"
 readme = "README.md"
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.13"
+dependencies = [
+    "sounddevice",
+    "websockets",
+    "click",
+    "numpy",
+    "vllm>=0.15.1",
+    "mistral-common[audio]>=1.9.0",
+]
+
+[project.scripts]
+purr = "purr.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+extra-index-url = ["https://wheels.vllm.ai/nightly"]
+prerelease = "allow"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/purr"]

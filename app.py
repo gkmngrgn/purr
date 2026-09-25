@@ -197,7 +197,7 @@ def process(audio: tuple[int, np.ndarray], mode: str | None, transcript: str):
         text = "[no speech detected]"
 
     updated = f"{transcript}\n{text}{note}" if transcript else f"{text}{note}"
-    yield AdditionalOutputs((updated,))
+    yield AdditionalOutputs(updated)
 
 
 # ---------------------------------------------------------------------------

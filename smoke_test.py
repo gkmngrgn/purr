@@ -1,11 +1,14 @@
 import os, sys, subprocess, textwrap
 
+RESULTS = []
+
 def run(label, code):
     r = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True)
     status = "OK " if r.returncode == 0 else "FAIL"
     print(f"[{status}] {label}")
     if r.returncode != 0:
         print(r.stderr[-2000:])
+    RESULTS.append(r.returncode)
     return r.returncode
 
 run("stream+UI construction (offline, no launch)", """
@@ -33,7 +36,7 @@ y24 = app.resample(mono, 16000, 24000)
 assert len(y24) == 12000
 i16 = app.to_int16(mono)
 assert i16.dtype == np.int16 and i16.max() <= 32767
-frames = list(app.playback_chunks(np.float32(mono), chunk_s=0.1))
+frames = list(app.playback_chunks(mono, chunk_s=0.1))
 assert frames and frames[0][0] == 24000 and frames[0][1].ndim == 2
 print("audio helpers OK", len(frames), "frames")
 """)
@@ -53,3 +56,5 @@ import app
 rc = app.rtc_configuration()
 print("rtc_configuration ->", rc)
 """)
+
+sys.exit(1 if any(RESULTS) else 0)

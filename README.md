@@ -7,10 +7,12 @@ sdk: gradio
 sdk_version: 5.50.0
 app_file: app.py
 pinned: false
-short_description: Real-time speech-to-text on the HF stack — ai-coustics Quail enhancement + Whisper via Inference Providers, over WebRTC with FastRTC.
+short_description: Real-time WebRTC speech-to-text with Quail + Whisper
 ---
 
 # Clean Transcribe
+
+🔗 **[Live demo on HF Spaces](https://huggingface.co/spaces/goedev/purr)**
 
 A real-time speech-to-text demo built on the Hugging Face stack:
 
@@ -32,7 +34,7 @@ Configure both in **Space → Settings → Variables and secrets**:
 ## Run locally
 
 ```bash
-python -m venv .venv && . .venv/bin/activate   # or: uv venv
+python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 export HF_TOKEN=hf_...
 export AIC_SDK_LICENSE=...
@@ -53,3 +55,12 @@ Open http://localhost:7860. WebRTC in a browser works without a token (TURN cred
 - The Quail model (~35 MB) is downloaded to `models/` on first use; it is cached in the Space until the container restarts.
 - The shared Quail processor is serialized with a lock, so concurrent sessions process sequentially (a demo-grade tradeoff).
 - Privacy: audio leaves the Space for (a) transcription via HF Inference Providers (serverless) and (b) optional Cloudflare TURN relay. Do not feed it sensitive data.
+
+## License
+
+This project's own code is released under the [MIT License](LICENSE).
+
+Third-party components keep their own terms and are **not** covered by this license:
+
+- **ai-coustics Quail** (`quail-ms-l-16khz`) — model and `AIC_SDK_LICENSE` are governed by ai-coustics (https://developers.ai-coustics.com).
+- **Whisper** (`openai/whisper-large-v3`) — model weights under OpenAI's terms; used via HF Inference Providers.

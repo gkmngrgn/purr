@@ -62,6 +62,7 @@ Open http://localhost:7860. WebRTC in a browser works without a token (TURN cred
 
 ## Notes
 
+- The Space runs on **ZeroGPU** (Hugging Face's free tier for Gradio Spaces). ZeroGPU requires at least one `@spaces.GPU` handler, so `app.py` registers a no-op startup probe bound to the UI; the app itself is CPU-only. Switching to `cpu-basic` requires a paid plan.
 - The Quail model (~35 MB) is downloaded to `models/` on first use; it is cached in the Space until the container restarts.
 - The shared Quail processor is serialized with a lock, so concurrent sessions process sequentially (a demo-grade tradeoff).
 - Privacy: audio leaves the Space for (a) transcription via HF Inference Providers (serverless) and (b) optional Cloudflare TURN relay. Do not feed it sensitive data.

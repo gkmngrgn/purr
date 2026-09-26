@@ -21,6 +21,7 @@ Pipeline: mic -> FastRTC `ReplyOnPause` (WebRTC) -> optional Quail enhancement (
 
 ## Invariants that are easy to break
 - The `gradio` pin in `pyproject.toml` must equal `sdk_version` in `README.md` (currently `5.50.0`). The Gradio Space build injects `gradio[oauth,mcp]==<sdk_version>`, and `fastrtc==0.0.34` caps `gradio<6`; bumping `sdk_version` to Gradio 6 makes `pip` fail with `ResolutionImpossible`.
+- The Space runs on ZeroGPU (Hugging Face's free Gradio tier). ZeroGPU refuses to start unless the app has at least one Gradio event handler bound to a `@spaces.GPU` function. `app.py` binds the no-op `_zerogpu_startup_probe` to `stream.ui`; keep it bound to a Gradio event (defining it alone is not enough — the startup scan walks Gradio's registered handlers). The app itself is CPU-only.
 - `process(audio, mode, transcript)` is invoked positionally from `Stream(additional_inputs=[mode_radio, transcript])`; keep those components and that order in sync.
 - Yield `AdditionalOutputs(value)` (bare value), never `AdditionalOutputs((value,))`. With a single output component Gradio wraps the prediction without unpacking, so the wrapped form renders the Textbox as a Python tuple like `('text',)`.
 - FastRTC calls the outputs handler as `handler(current_component_value, *AdditionalOutputs.args)`; the first argument is the current transcript value, not the WebRTC id.

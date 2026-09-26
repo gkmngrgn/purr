@@ -17,6 +17,14 @@ import wave
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+# ZeroGPU Spaces require `import spaces` before any CUDA-touching import.
+# The package ships with the Space base image on every hardware tier; locally
+# it may be absent, which is harmless (`@spaces.GPU` is a no-op off ZeroGPU).
+try:
+    import spaces
+except ImportError:  # local dev
+    spaces = None
+
 import numpy as np
 
 import gradio as gr
@@ -243,6 +251,24 @@ stream = Stream(
         "pulse_color": "var(--color-green)",
     },
 )
+
+# ---------------------------------------------------------------------------
+# ZeroGPU startup probe (Space-only)
+# ---------------------------------------------------------------------------
+# Free-tier Gradio Spaces run on ZeroGPU, whose startup scan requires at least
+# one Gradio event handler bound to a @spaces.GPU function. This app is
+# CPU-only (Quail runs on CPU, Whisper goes through HF Inference Providers),
+# so the probe is a no-op that is never invoked; it only satisfies the scan.
+if spaces is not None:
+
+    @spaces.GPU
+    def _zerogpu_startup_probe() -> None:
+        return None
+
+    with stream.ui:
+        _zerogpu_probe = gr.Button(visible=False)
+        _zerogpu_probe.click(fn=_zerogpu_startup_probe, inputs=None, outputs=None)
+
 
 if __name__ == "__main__":
     stream.ui.launch()

@@ -45,7 +45,7 @@ assert dur == 0.0 and chunks == [], (dur, chunks)
 print("adapter contract OK (fail-closed without license)")
 """)
 
-run("empty transcription reports speech-without-words, not no-speech", """
+run("empty transcription reports speech-without-words, not no-speech", r"""
 import numpy as np
 import app
 app.transcribe_16k = lambda y16: ""
@@ -53,7 +53,7 @@ y = (np.sin(2*np.pi*440*np.linspace(0, 0.3, 4800)) * 0.2).astype(np.float32)
 outs = list(app.process((48000, y), "raw", "prev"))
 assert isinstance(outs[-1], app.AdditionalOutputs), outs[-1]
 text = outs[-1].args[0]
-assert text == "prev" + chr(10) + app.NO_WORDS_LINE, text
+assert text == "prev\n" + app.NO_WORDS_LINE, text
 assert app.NO_SPEECH_LINE not in text
 print("no-words label OK")
 """)
@@ -71,7 +71,7 @@ assert h.emit() is None
 print("no double append OK")
 """)
 
-run("speechless press emits no-speech line without transcription", """
+run("speechless press emits no-speech line without transcription", r"""
 import time
 import numpy as np
 import app
@@ -81,13 +81,13 @@ h.receive((48000, np.zeros(4800, dtype=np.float32)))
 h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
 out = h.emit()
 assert isinstance(out, app.AdditionalOutputs), out
-assert out.args[0] == "existing" + chr(10) + app.NO_SPEECH_LINE, out.args
+assert out.args[0] == "existing\n" + app.NO_SPEECH_LINE, out.args
 # a second silent press must emit again
 h.receive((48000, np.zeros(4800, dtype=np.float32)))
 h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
 out2 = h.emit()
 assert isinstance(out2, app.AdditionalOutputs), out2
-assert out2.args[0] == "existing" + chr(10) + app.NO_SPEECH_LINE, out2.args
+assert out2.args[0] == "existing\n" + app.NO_SPEECH_LINE, out2.args
 print("speechless press OK")
 """)
 

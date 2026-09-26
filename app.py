@@ -88,6 +88,14 @@ def get_hf_client() -> InferenceClient:
     return _client_cache[0]
 
 
+def _load_aic_model(model_id: str) -> aic.Model:
+    """Download (once) and load an ai-coustics model file."""
+    import aic_sdk as aic
+
+    model_path = aic.Model.download(model_id, MODELS_DIR)
+    return aic.Model.from_file(model_path)
+
+
 def load_quail() -> tuple[aic.Processor, aic.ProcessorConfig]:
     """Download (once) and initialize the Quail enhancement processor."""
     with _init_lock:
@@ -98,8 +106,7 @@ def load_quail() -> tuple[aic.Processor, aic.ProcessorConfig]:
         license_key = os.environ.get("AIC_SDK_LICENSE")
         if not license_key:
             raise RuntimeError("AIC_SDK_LICENSE is not set.")
-        model_path = aic.Model.download(QUAIL_MODEL_ID, MODELS_DIR)
-        model = aic.Model.from_file(model_path)
+        model = _load_aic_model(QUAIL_MODEL_ID)
         processor = aic.Processor(model, license_key)
         config = aic.ProcessorConfig.optimal(model, sample_rate=AIC_SAMPLE_RATE)
         processor.initialize(config)
@@ -113,17 +120,15 @@ def load_quail() -> tuple[aic.Processor, aic.ProcessorConfig]:
 # ---------------------------------------------------------------------------
 
 _vad_model: dict[str, Any] = {}
+_vad_lock = threading.Lock()
 
 
 def load_vad_model() -> aic.Model:
     """Download (once) and load the ai-coustics VAD model (no license needed)."""
-    with _init_lock:
+    with _vad_lock:
         if "model" in _vad_model:
             return _vad_model["model"]
-        import aic_sdk as aic
-
-        model_path = aic.Model.download(VAD_MODEL_ID, MODELS_DIR)
-        model = aic.Model.from_file(model_path)
+        model = _load_aic_model(VAD_MODEL_ID)
         _vad_model["model"] = model
         return model
 
@@ -142,7 +147,6 @@ class AICVadAdapter:
     def __init__(self) -> None:
         self._vad = None
         self._config = None
-        self._sample_rate: int | None = None
         self._lock = threading.Lock()
 
     def _ensure(self) -> tuple[aic.Vad, aic.ProcessorConfig]:
@@ -157,7 +161,6 @@ class AICVadAdapter:
                     raise RuntimeError("AIC_SDK_LICENSE is not set.")
                 model = load_vad_model()
                 config = aic.ProcessorConfig.optimal(model)
-                self._sample_rate = int(config.sample_rate)
                 self._vad = aic.Vad(model, license_key, config)
                 self._config = config
         assert self._vad is not None and self._config is not None
@@ -175,19 +178,14 @@ class AICVadAdapter:
         try:
             sr, arr = audio
             vad, config = self._ensure()
-            sample_rate = self._sample_rate
-            if sample_rate is None:
-                raise RuntimeError("VAD sample rate is not initialized.")
             block_size = int(config.block_size)
+            sample_rate = int(config.sample_rate)
             mono = to_mono_float32((sr, arr))[1]
             mono = resample(mono, sr, sample_rate)
             ctx = vad.get_context()
             ctx.reset()
             speech_blocks = 0
-            for i in range(0, len(mono), block_size):
-                block = np.ascontiguousarray(mono[i : i + block_size], dtype=np.float32)
-                if len(block) < block_size:
-                    block = np.pad(block, (0, block_size - len(block)))
+            for block in iter_blocks(mono, block_size):
                 vad.process(block)
                 if float(ctx.raw_vad_probability()) >= VAD_SPEECH_THRESHOLD:
                     speech_blocks += 1
@@ -218,6 +216,15 @@ def to_mono_float32(audio: tuple[int, np.ndarray]) -> tuple[int, np.ndarray]:
     return sr, np.clip(arr, -1.0, 1.0)
 
 
+def iter_blocks(x: np.ndarray, block_size: int) -> Iterator[np.ndarray]:
+    """Yield float32 blocks of ``block_size``, zero-padding the final block."""
+    for i in range(0, len(x), block_size):
+        block = np.ascontiguousarray(x[i : i + block_size], dtype=np.float32)
+        if len(block) < block_size:
+            block = np.pad(block, (0, block_size - len(block)))
+        yield block
+
+
 def resample(x: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     if x is None or len(x) == 0 or orig_sr == target_sr:
         return x
@@ -233,12 +240,7 @@ def enhance_16k(y16: np.ndarray) -> np.ndarray:
     with _proc_lock:
         ctx = processor.get_context()
         ctx.reset()
-        out = []
-        for i in range(0, len(y16), block_size):
-            block = np.ascontiguousarray(y16[i : i + block_size], dtype=np.float32)
-            if len(block) < block_size:
-                block = np.pad(block, (0, block_size - len(block)))
-            out.append(processor.process(block))
+        out = [processor.process(block) for block in iter_blocks(y16, block_size)]
         return np.concatenate(out)[: len(y16)]
 
 
@@ -282,6 +284,11 @@ def playback_chunks(y16: np.ndarray, chunk_s: float = 0.3) -> Iterator[tuple[int
 # ---------------------------------------------------------------------------
 
 
+def append_transcript_line(transcript: str, line: str) -> str:
+    """Append ``line`` to the accumulated transcript, newline-separated."""
+    return f"{transcript}\n{line}" if transcript else line
+
+
 def process(audio: tuple[int, np.ndarray], mode: str | None, transcript: str) -> Iterator[tuple[int, np.ndarray] | AdditionalOutputs]:
     """Handle one spoken utterance: enhance (optionally), play back, transcribe."""
     sr, mono = to_mono_float32(audio)
@@ -308,11 +315,10 @@ def process(audio: tuple[int, np.ndarray], mode: str | None, transcript: str) ->
 
     if not text:
         # A turn only fires once the pause detector has confirmed speech, so an
-        # empty transcript here is a recognition miss, not silence (R3).
+        # empty transcript here is a recognition miss, not silence.
         text = NO_WORDS_LINE
 
-    updated = f"{transcript}\n{text}{note}" if transcript else f"{text}{note}"
-    yield AdditionalOutputs(updated)
+    yield AdditionalOutputs(append_transcript_line(transcript, f"{text}{note}"))
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +331,7 @@ class SpeechAwarePauseHandler(ReplyOnPause):
 
     A turn only fires after speech is detected, so a silent hold-and-release
     would otherwise produce nothing. A per-connection no-input gap marks the
-    release and emits a no-speech line instead (R4).
+    release and emits a no-speech line instead.
     """
 
     def __init__(self, *args: Any, silence_gap_s: float = SILENCE_GAP_S, **kwargs: Any) -> None:
@@ -389,8 +395,7 @@ class SpeechAwarePauseHandler(ReplyOnPause):
             transcript = self.latest_args[-1] if self.latest_args else ""
             if not isinstance(transcript, str):
                 transcript = ""
-            updated = f"{transcript}\n{NO_SPEECH_LINE}" if transcript else NO_SPEECH_LINE
-            return AdditionalOutputs(updated)
+            return AdditionalOutputs(append_transcript_line(transcript, NO_SPEECH_LINE))
         return None
 
 

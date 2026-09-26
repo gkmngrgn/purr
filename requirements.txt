@@ -69,8 +69,6 @@ ffmpy==1.0.0
     # via gradio
 filelock==4.0.3
     # via huggingface-hub
-flatbuffers==25.12.19
-    # via onnxruntime
 fsspec==2026.9.0
     # via
     #   gradio-client
@@ -149,14 +147,11 @@ numpy==2.5.3
     #   gradio
     #   librosa
     #   numba
-    #   onnxruntime
     #   pandas
     #   scikit-learn
     #   scipy
     #   soundfile
     #   soxr
-onnxruntime==1.30.0
-    # via fastrtc
 orjson==3.12.0
     # via gradio
 packaging==26.3
@@ -165,7 +160,6 @@ packaging==26.3
     #   gradio-client
     #   huggingface-hub
     #   lazy-loader
-    #   onnxruntime
     #   pooch
 pandas==2.3.3
     # via gradio
@@ -175,8 +169,6 @@ platformdirs==4.11.15
     # via pooch
 pooch==1.9.0
     # via librosa
-protobuf==7.36.2
-    # via onnxruntime
 pycparser==3.0 ; implementation_name != 'PyPy'
     # via cffi
 pydantic==2.12.3

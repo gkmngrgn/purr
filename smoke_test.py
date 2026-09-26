@@ -19,7 +19,76 @@ import app
 assert app.stream.ui is not None
 assert app.mode_radio is not None
 assert callable(app.rtc_configuration)
+handler = app.stream.event_handler
+assert isinstance(handler, app.SpeechAwarePauseHandler), type(handler).__name__
+assert isinstance(handler.model, app.AICVadAdapter), type(handler.model).__name__
+assert not app._vad_model, "VAD model must not be built at import"
+assert app.NO_SPEECH_LINE != app.NO_WORDS_LINE
+c = handler.copy()
+assert isinstance(c, app.SpeechAwarePauseHandler)
+assert isinstance(c.model, app.AICVadAdapter)
+assert c.model is not handler.model, "each connection must get its own detector"
 print("constructed OK", type(app.stream).__name__)
+""")
+
+run("aic VAD adapter satisfies the detector contract (offline, no license)", """
+import os
+os.environ.pop('HF_TOKEN', None)
+os.environ.pop('AIC_SDK_LICENSE', None)
+import numpy as np
+import app
+adapter = app.AICVadAdapter()
+assert callable(adapter.vad) and callable(adapter.warmup)
+assert app._vad_model == {}, "adapter construction must not download the model"
+dur, chunks = adapter.vad((48000, np.zeros(4800, dtype=np.float32)))
+assert dur == 0.0 and chunks == [], (dur, chunks)
+print("adapter contract OK (fail-closed without license)")
+""")
+
+run("empty transcription reports speech-without-words, not no-speech", """
+import numpy as np
+import app
+app.transcribe_16k = lambda y16: ""
+y = (np.sin(2*np.pi*440*np.linspace(0, 0.3, 4800)) * 0.2).astype(np.float32)
+outs = list(app.process((48000, y), "raw", "prev"))
+assert isinstance(outs[-1], app.AdditionalOutputs), outs[-1]
+text = outs[-1].args[0]
+assert text == "prev" + chr(10) + app.NO_WORDS_LINE, text
+assert app.NO_SPEECH_LINE not in text
+print("no-words label OK")
+""")
+
+run("a spoken turn does not also emit a no-speech line", """
+import time
+import numpy as np
+import app
+h = app.SpeechAwarePauseHandler(lambda audio, mode, transcript: iter(()), model=app.AICVadAdapter())
+h.latest_args = [None, "raw", "prev"]
+h.receive((48000, np.zeros(4800, dtype=np.float32)))
+h._turn_fired = True
+h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
+assert h.emit() is None
+print("no double append OK")
+""")
+
+run("speechless press emits no-speech line without transcription", """
+import time
+import numpy as np
+import app
+h = app.SpeechAwarePauseHandler(lambda audio, mode, transcript: iter(()), model=app.AICVadAdapter())
+h.latest_args = [None, "enhanced", "existing"]
+h.receive((48000, np.zeros(4800, dtype=np.float32)))
+h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
+out = h.emit()
+assert isinstance(out, app.AdditionalOutputs), out
+assert out.args[0] == "existing" + chr(10) + app.NO_SPEECH_LINE, out.args
+# a second silent press must emit again
+h.receive((48000, np.zeros(4800, dtype=np.float32)))
+h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
+out2 = h.emit()
+assert isinstance(out2, app.AdditionalOutputs), out2
+assert out2.args[0] == "existing" + chr(10) + app.NO_SPEECH_LINE, out2.args
+print("speechless press OK")
 """)
 
 run("audio helpers with synthetic mono/stereo int16", """

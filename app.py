@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import os
 import threading
+import time
 import wave
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -42,6 +43,11 @@ MODELS_DIR = "models"
 AIC_SAMPLE_RATE = 16000  # Quail native sample rate
 OUTPUT_SAMPLE_RATE = 24000  # FastRTC output sample rate (multiple of 50)
 WHISPER_MODEL = "openai/whisper-large-v3"
+VAD_MODEL_ID = "vad-2.1-xxs-16khz"  # ai-coustics dedicated VAD model
+VAD_SPEECH_THRESHOLD = 0.5  # raw per-block probability treated as speech
+SILENCE_GAP_S = 1.5  # no-input gap that marks the end of a silent press
+NO_SPEECH_LINE = "[no speech detected]"
+NO_WORDS_LINE = "[speech detected, but no words recognized]"
 TEST_AUDIO_URL = (
     "https://storage.googleapis.com/media-session/sintel/snow-fight.mp3"
 )
@@ -92,6 +98,93 @@ def load_quail() -> tuple:
         _quail["processor"] = processor
         _quail["config"] = config
         return processor, config
+
+
+# ---------------------------------------------------------------------------
+# Pause detection (ai-coustics VAD)
+# ---------------------------------------------------------------------------
+
+_vad_model: dict = {}
+
+
+def load_vad_model():
+    """Download (once) and load the ai-coustics VAD model (no license needed)."""
+    with _init_lock:
+        if "model" in _vad_model:
+            return _vad_model["model"]
+        import aic_sdk as aic
+
+        model_path = aic.Model.download(VAD_MODEL_ID, MODELS_DIR)
+        model = aic.Model.from_file(model_path)
+        _vad_model["model"] = model
+        return model
+
+
+class AICVadAdapter:
+    """FastRTC pause detector backed by ai-coustics' voice activity detector.
+
+    One instance per WebRTC connection; the downloaded model is cached
+    process-wide. Each FastRTC window is treated independently: the detector
+    context is reset, the window is resampled to the model's native rate, and
+    speech-seconds are derived from the raw per-block probability (the
+    post-processed ``is_speech_detected`` flag carries hold hysteresis that
+    would mask pauses).
+    """
+
+    def __init__(self):
+        self._vad = None
+        self._config = None
+        self._sample_rate = None
+        self._lock = threading.Lock()
+
+    def _ensure(self):
+        if self._vad is not None:
+            return self._vad, self._config
+        with self._lock:
+            if self._vad is None:
+                import aic_sdk as aic
+
+                license_key = os.environ.get("AIC_SDK_LICENSE")
+                if not license_key:
+                    raise RuntimeError("AIC_SDK_LICENSE is not set.")
+                model = load_vad_model()
+                config = aic.ProcessorConfig.optimal(model)
+                self._sample_rate = int(config.sample_rate)
+                self._vad = aic.Vad(model, license_key, config)
+                self._config = config
+        return self._vad, self._config
+
+    def warmup(self):
+        """Build the detector ahead of the first window; never fatal."""
+        try:
+            self._ensure()
+        except Exception as exc:
+            print(f"[vad] warmup failed: {exc}")
+
+    def vad(self, audio, options=None):
+        """Return ``(speech_seconds, [])`` for one FastRTC audio window."""
+        try:
+            sr, arr = audio
+            vad, config = self._ensure()
+            block_size = int(config.block_size)
+            mono = to_mono_float32((sr, arr))[1]
+            mono = resample(mono, sr, self._sample_rate)
+            ctx = vad.get_context()
+            ctx.reset()
+            speech_blocks = 0
+            for i in range(0, len(mono), block_size):
+                block = np.ascontiguousarray(mono[i : i + block_size], dtype=np.float32)
+                if len(block) < block_size:
+                    block = np.pad(block, (0, block_size - len(block)))
+                vad.process(block)
+                if float(ctx.raw_vad_probability()) >= VAD_SPEECH_THRESHOLD:
+                    speech_blocks += 1
+            return speech_blocks * block_size / self._sample_rate, []
+        except Exception as exc:
+            # Fail closed: report no speech, so no turn starts and no audio
+            # accumulates, rather than a sentinel that starts a turn that never ends.
+            print(f"[vad] detector unavailable: {exc}")
+            return 0.0, []
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +295,91 @@ def process(audio: tuple[int, np.ndarray], mode: str | None, transcript: str):
         text = f"[transcription error: {exc}]"
 
     if not text:
-        text = "[no speech detected]"
+        # A turn only fires once the pause detector has confirmed speech, so an
+        # empty transcript here is a recognition miss, not silence (R3).
+        text = NO_WORDS_LINE
 
     updated = f"{transcript}\n{text}{note}" if transcript else f"{text}{note}"
     yield AdditionalOutputs(updated)
+
+
+# ---------------------------------------------------------------------------
+# Speechless-press handling
+# ---------------------------------------------------------------------------
+
+
+class SpeechAwarePauseHandler(ReplyOnPause):
+    """ReplyOnPause that also reports a press ending with no speech.
+
+    A turn only fires after speech is detected, so a silent hold-and-release
+    would otherwise produce nothing. A per-connection no-input gap marks the
+    release and emits a no-speech line instead (R4).
+    """
+
+    def __init__(self, *args, silence_gap_s: float = SILENCE_GAP_S, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._silence_gap_s = silence_gap_s
+        self._last_audio_time = 0.0
+        self._press_active = False
+        self._no_speech_sent = False
+        self._turn_fired = False
+
+    def start_up(self):
+        super().start_up()
+        warmup = getattr(self.model, "warmup", None)
+        if callable(warmup):
+            warmup()
+
+    def copy(self):
+        return SpeechAwarePauseHandler(
+            fn=self.fn,
+            startup_fn=self.startup_fn,
+            algo_options=self.algo_options,
+            model_options=self.model_options,
+            can_interrupt=self.can_interrupt,
+            expected_layout=self.expected_layout,
+            output_sample_rate=self.output_sample_rate,
+            output_frame_size=self.output_frame_size,
+            input_sample_rate=self.input_sample_rate,
+            model=AICVadAdapter(),
+            needs_args=self.needs_args,
+            silence_gap_s=self._silence_gap_s,
+        )
+
+    def receive(self, frame):
+        now = time.monotonic()
+        if (now - self._last_audio_time) >= self._silence_gap_s:
+            # A new press begins: clear state from the previous one. Cleared here,
+            # not on turn completion, so a completed turn still suppresses the
+            # no-speech line until the user actually starts a new press.
+            self._no_speech_sent = False
+            self._turn_fired = False
+        self._last_audio_time = now
+        self._press_active = True
+        super().receive(frame)
+
+    def emit(self):
+        out = super().emit()
+        if out is not None:
+            self._turn_fired = True
+            return out
+        if (
+            self._press_active
+            and not self._turn_fired
+            and not self._no_speech_sent
+            and not self.state.started_talking
+            and not self.state.responding
+            and self.generator is None
+            and (time.monotonic() - self._last_audio_time) >= self._silence_gap_s
+        ):
+            self._no_speech_sent = True
+            self._press_active = False
+            transcript = self.latest_args[-1] if self.latest_args else ""
+            if not isinstance(transcript, str):
+                transcript = ""
+            updated = f"{transcript}\n{NO_SPEECH_LINE}" if transcript else NO_SPEECH_LINE
+            return AdditionalOutputs(updated)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +409,7 @@ mode_radio = gr.Radio(
 transcript = gr.Textbox(label="Transcript", lines=10, placeholder="Press and hold the mic button, speak, then release.")
 
 stream = Stream(
-    ReplyOnPause(process),
+    SpeechAwarePauseHandler(process, model=AICVadAdapter()),
     modality="audio",
     mode="send-receive",
     additional_inputs=[mode_radio, transcript],

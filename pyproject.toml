@@ -5,7 +5,7 @@ description = "Real-time speech-to-text: Quail enhancement + Whisper via HF Infe
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastrtc[vad]==0.0.34",
+    "fastrtc==0.0.34",
     # Must match `sdk_version` in README.md; the Space build installs
     # `gradio[oauth,mcp]==<sdk_version>` and fastrtc 0.0.34 caps gradio<6.
     "gradio==5.50.0",

@@ -22,6 +22,9 @@ The user-facing choice between *enhanced* (run Quail enhancement before playback
 ### Transcript
 The accumulated text output, appended to across utterances. It distinguishes recognized words from two non-word outcomes: speech that produced no words, and a press with no speech at all.
 
+### Speechless press
+A press-and-release during which the turn detector confirms no speech. It is reported as a distinct no-speech line rather than a transcription failure, and it is separate from an utterance that produced no recognized words.
+
 ### Whisper transcription
 The speech-to-text stage. It sends the (possibly enhanced) utterance to Whisper through Hugging Face Inference Providers rather than running a model locally.
 

@@ -7,6 +7,9 @@ Shared domain vocabulary for this project — entities, named processes, and sta
 ### Purr
 The demo application: a real-time speech-to-text Space that turns microphone speech into a cleaned transcript.
 
+### Turn detection
+The stage that decides when a spoken utterance has ended, so the pipeline fires once per utterance rather than on a fixed timer. Purr gets the decision from ai-coustics' voice activity detector, whose verdict also distinguishes speech that produced no words from a press with no speech.
+
 ### Utterance
 One spoken input captured as a single continuous segment. It is the unit that gets enhanced, played back, and transcribed, and it is never split across stages.
 
@@ -17,7 +20,7 @@ The optional speech-enhancement stage that cleans an utterance with ai-coustics 
 The user-facing choice between *enhanced* (run Quail enhancement before playback and transcription) and *raw* (use the microphone audio as-is). Raw reveals the fidelity the transcriber actually receives.
 
 ### Transcript
-The accumulated text output, appended to across utterances. It distinguishes "no speech detected" from a failure to transcribe.
+The accumulated text output, appended to across utterances. It distinguishes recognized words from two non-word outcomes: speech that produced no words, and a press with no speech at all.
 
 ### Whisper transcription
 The speech-to-text stage. It sends the (possibly enhanced) utterance to Whisper through Hugging Face Inference Providers rather than running a model locally.

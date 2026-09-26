@@ -3,6 +3,7 @@
 ## What this is
 Single-file Hugging Face Gradio Space for real-time speech-to-text (`app.py`).
 Pipeline: mic -> FastRTC `ReplyOnPause` (WebRTC) -> optional Quail enhancement (aic-sdk, CPU) -> Whisper via HF Inference Providers -> transcript. `README.md` is the Space card and deployment notes.
+Documented solutions live in `docs/solutions/` (organized by category with YAML frontmatter: `module`, `tags`, `problem_type`); shared domain vocabulary is in `CONCEPTS.md`. Relevant when implementing or debugging in documented areas.
 
 ## Deploy
 - Live Space: https://huggingface.co/spaces/goedev/purr. It is the git remote `origin`; pushing `main` redeploys (requires your HF write token).

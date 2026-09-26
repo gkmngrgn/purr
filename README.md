@@ -1,13 +1,15 @@
 ---
-title: Clean Transcribe
+title: Purr
 emoji: 🎙️
 colorFrom: green
 colorTo: green
 sdk: gradio
-sdk_version: 5.50.0
+sdk_version: 6.28.0
+python_version: '3.12'
 app_file: app.py
 pinned: false
-short_description: Real-time WebRTC speech-to-text with Quail + Whisper
+license: apache-2.0
+short_description: 'Real-time speech-to-text: Quail enhancement + Whisper'
 ---
 
 # Clean Transcribe

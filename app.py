@@ -29,6 +29,7 @@ except ImportError:  # local dev
     spaces = None
 
 import numpy as np
+from dotenv import load_dotenv
 
 import gradio as gr
 from gradio.utils import get_space
@@ -430,21 +431,38 @@ class SpeechAwarePauseHandler(ReplyOnPause):
 # ---------------------------------------------------------------------------
 
 
-def rtc_configuration() -> dict[str, Any] | None:
-    """TURN credentials on Spaces (requires HF_TOKEN); None locally.
+def rtc_configuration() -> dict[str, Any]:
+    """ICE servers for WebRTC: public STUN, plus Cloudflare TURN when configured.
 
-    FastRTC accepts a ``None`` return at runtime for this callable, though its
-    callable type does not model it.
+    Must never return ``None``: FastRTC substitutes no default when this callable
+    returns ``None``, which leaves the browser with zero ICE servers and a
+    WebRTC connection stuck at "connecting".
+
+    ``HF_TOKEN`` is deliberately not used here. fastrtc's ``hf_token`` path posts
+    the token to ``turn.fastrtc.org``, which is dead upstream, and that dangling
+    DNS delegation is a takeover risk for the token.
     """
-    if not is_space():
-        return None
-    try:
-        from fastrtc.credentials import get_cloudflare_turn_credentials
+    turn_key_id = os.environ.get("CLOUDFLARE_TURN_KEY_ID")
+    turn_key_api_token = os.environ.get("CLOUDFLARE_TURN_KEY_API_TOKEN")
+    if is_space() and turn_key_id and turn_key_api_token:
+        try:
+            from fastrtc.credentials import get_cloudflare_turn_credentials
 
-        return get_cloudflare_turn_credentials(hf_token=os.environ.get("HF_TOKEN"))
-    except Exception as exc:
-        print(f"[turn] falling back to default ICE servers: {exc}")
-        return None
+            # hf_token="" forces the Cloudflare-keys branch; the default reads
+            # HF_TOKEN and would hit the dead fastrtc endpoint instead.
+            return get_cloudflare_turn_credentials(
+                turn_key_id=turn_key_id,
+                turn_key_api_token=turn_key_api_token,
+                hf_token="",
+            )
+        except Exception as exc:
+            print(f"[turn] Cloudflare TURN unavailable, using STUN only: {exc}")
+    return {
+        "iceServers": [
+            {"urls": "stun:stun.l.google.com:19302"},
+            {"urls": "stun:stun.cloudflare.com:3478"},
+        ]
+    }
 
 
 mode_radio = gr.Radio(
@@ -462,7 +480,7 @@ stream = Stream(
     additional_inputs=[mode_radio, transcript],
     additional_outputs=[transcript],
     additional_outputs_handler=lambda _webrtc_id, outputs: outputs,
-    rtc_configuration=rtc_configuration,  # ty: ignore[invalid-argument-type]
+    rtc_configuration=rtc_configuration,
     concurrency_limit=5 if is_space() else None,
     time_limit=90 if is_space() else None,
     ui_args={
@@ -492,4 +510,7 @@ if spaces is not None:
 
 
 if __name__ == "__main__":
+    # Local runs read .env (gitignored); on the Space it is absent and this is a
+    # no-op, so the injected secrets remain the source of truth.
+    load_dotenv()
     stream.ui.launch()

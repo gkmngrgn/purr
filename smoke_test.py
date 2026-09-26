@@ -2,7 +2,7 @@ import os, sys, subprocess, textwrap
 
 RESULTS = []
 
-def run(label, code):
+def run(label: str, code: str) -> int:
     r = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True)
     status = "OK " if r.returncode == 0 else "FAIL"
     print(f"[{status}] {label}")

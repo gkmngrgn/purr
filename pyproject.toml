@@ -19,3 +19,12 @@ dependencies = [
 # This is an application, not a distributable package.
 [tool.uv]
 package = false
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ANN"]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true

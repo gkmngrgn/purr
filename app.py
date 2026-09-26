@@ -15,6 +15,8 @@ import os
 import threading
 import time
 import wave
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
@@ -22,7 +24,7 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 # The package ships with the Space base image on every hardware tier; locally
 # it may be absent, which is harmless (`@spaces.GPU` is a no-op off ZeroGPU).
 try:
-    import spaces
+    import spaces  # ty: ignore[unresolved-import]
 except ImportError:  # local dev
     spaces = None
 
@@ -33,6 +35,12 @@ from gradio.utils import get_space
 
 import librosa
 from fastrtc import AdditionalOutputs, ReplyOnPause, Stream
+
+if TYPE_CHECKING:
+    import aic_sdk as aic
+    from fastrtc.tracks import EmitType
+    from fastrtc.utils import AudioChunk
+    from huggingface_hub import InferenceClient
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -66,11 +74,11 @@ def is_space() -> bool:
 
 _init_lock = threading.Lock()
 _proc_lock = threading.Lock()
-_quail: dict = {}
-_client_cache: list = []
+_quail: dict[str, Any] = {}
+_client_cache: list[InferenceClient] = []
 
 
-def get_hf_client():
+def get_hf_client() -> InferenceClient:
     if not _client_cache:
         with _init_lock:
             if not _client_cache:
@@ -80,7 +88,7 @@ def get_hf_client():
     return _client_cache[0]
 
 
-def load_quail() -> tuple:
+def load_quail() -> tuple[aic.Processor, aic.ProcessorConfig]:
     """Download (once) and initialize the Quail enhancement processor."""
     with _init_lock:
         if "processor" in _quail:
@@ -104,10 +112,10 @@ def load_quail() -> tuple:
 # Pause detection (ai-coustics VAD)
 # ---------------------------------------------------------------------------
 
-_vad_model: dict = {}
+_vad_model: dict[str, Any] = {}
 
 
-def load_vad_model():
+def load_vad_model() -> aic.Model:
     """Download (once) and load the ai-coustics VAD model (no license needed)."""
     with _init_lock:
         if "model" in _vad_model:
@@ -131,14 +139,14 @@ class AICVadAdapter:
     would mask pauses).
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._vad = None
         self._config = None
-        self._sample_rate = None
+        self._sample_rate: int | None = None
         self._lock = threading.Lock()
 
-    def _ensure(self):
-        if self._vad is not None:
+    def _ensure(self) -> tuple[aic.Vad, aic.ProcessorConfig]:
+        if self._vad is not None and self._config is not None:
             return self._vad, self._config
         with self._lock:
             if self._vad is None:
@@ -152,23 +160,27 @@ class AICVadAdapter:
                 self._sample_rate = int(config.sample_rate)
                 self._vad = aic.Vad(model, license_key, config)
                 self._config = config
+        assert self._vad is not None and self._config is not None
         return self._vad, self._config
 
-    def warmup(self):
+    def warmup(self) -> None:
         """Build the detector ahead of the first window; never fatal."""
         try:
             self._ensure()
         except Exception as exc:
             print(f"[vad] warmup failed: {exc}")
 
-    def vad(self, audio, options=None):
+    def vad(self, audio: tuple[int, np.ndarray], options: object | None = None) -> tuple[float, list[AudioChunk]]:
         """Return ``(speech_seconds, [])`` for one FastRTC audio window."""
         try:
             sr, arr = audio
             vad, config = self._ensure()
+            sample_rate = self._sample_rate
+            if sample_rate is None:
+                raise RuntimeError("VAD sample rate is not initialized.")
             block_size = int(config.block_size)
             mono = to_mono_float32((sr, arr))[1]
-            mono = resample(mono, sr, self._sample_rate)
+            mono = resample(mono, sr, sample_rate)
             ctx = vad.get_context()
             ctx.reset()
             speech_blocks = 0
@@ -179,7 +191,7 @@ class AICVadAdapter:
                 vad.process(block)
                 if float(ctx.raw_vad_probability()) >= VAD_SPEECH_THRESHOLD:
                     speech_blocks += 1
-            return speech_blocks * block_size / self._sample_rate, []
+            return speech_blocks * block_size / sample_rate, []
         except Exception as exc:
             # Fail closed: report no speech, so no turn starts and no audio
             # accumulates, rather than a sentinel that starts a turn that never ends.
@@ -254,7 +266,7 @@ def transcribe_16k(y16: np.ndarray) -> str:
     return (result.text or "").strip()
 
 
-def playback_chunks(y16: np.ndarray, chunk_s: float = 0.3):
+def playback_chunks(y16: np.ndarray, chunk_s: float = 0.3) -> Iterator[tuple[int, np.ndarray]]:
     """Yield (OUTPUT_SAMPLE_RATE, int16 mono) chunks for WebRTC playback."""
     y24 = resample(y16, AIC_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
     if len(y24) == 0:
@@ -270,7 +282,7 @@ def playback_chunks(y16: np.ndarray, chunk_s: float = 0.3):
 # ---------------------------------------------------------------------------
 
 
-def process(audio: tuple[int, np.ndarray], mode: str | None, transcript: str):
+def process(audio: tuple[int, np.ndarray], mode: str | None, transcript: str) -> Iterator[tuple[int, np.ndarray] | AdditionalOutputs]:
     """Handle one spoken utterance: enhance (optionally), play back, transcribe."""
     sr, mono = to_mono_float32(audio)
     y16 = resample(mono, sr, AIC_SAMPLE_RATE)
@@ -316,7 +328,7 @@ class SpeechAwarePauseHandler(ReplyOnPause):
     release and emits a no-speech line instead (R4).
     """
 
-    def __init__(self, *args, silence_gap_s: float = SILENCE_GAP_S, **kwargs):
+    def __init__(self, *args: Any, silence_gap_s: float = SILENCE_GAP_S, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._silence_gap_s = silence_gap_s
         self._last_audio_time = 0.0
@@ -324,13 +336,13 @@ class SpeechAwarePauseHandler(ReplyOnPause):
         self._no_speech_sent = False
         self._turn_fired = False
 
-    def start_up(self):
+    def start_up(self) -> None:
         super().start_up()
         warmup = getattr(self.model, "warmup", None)
         if callable(warmup):
             warmup()
 
-    def copy(self):
+    def copy(self) -> SpeechAwarePauseHandler:
         return SpeechAwarePauseHandler(
             fn=self.fn,
             startup_fn=self.startup_fn,
@@ -346,7 +358,7 @@ class SpeechAwarePauseHandler(ReplyOnPause):
             silence_gap_s=self._silence_gap_s,
         )
 
-    def receive(self, frame):
+    def receive(self, frame: tuple[int, np.ndarray]) -> None:
         now = time.monotonic()
         if (now - self._last_audio_time) >= self._silence_gap_s:
             # A new press begins: clear state from the previous one. Cleared here,
@@ -358,7 +370,7 @@ class SpeechAwarePauseHandler(ReplyOnPause):
         self._press_active = True
         super().receive(frame)
 
-    def emit(self):
+    def emit(self) -> EmitType:
         out = super().emit()
         if out is not None:
             self._turn_fired = True
@@ -387,8 +399,12 @@ class SpeechAwarePauseHandler(ReplyOnPause):
 # ---------------------------------------------------------------------------
 
 
-def rtc_configuration():
-    """TURN credentials on Spaces (requires HF_TOKEN); None locally."""
+def rtc_configuration() -> dict[str, Any] | None:
+    """TURN credentials on Spaces (requires HF_TOKEN); None locally.
+
+    FastRTC accepts a ``None`` return at runtime for this callable, though its
+    callable type does not model it.
+    """
     if not is_space():
         return None
     try:
@@ -415,7 +431,7 @@ stream = Stream(
     additional_inputs=[mode_radio, transcript],
     additional_outputs=[transcript],
     additional_outputs_handler=lambda _webrtc_id, outputs: outputs,
-    rtc_configuration=rtc_configuration,
+    rtc_configuration=rtc_configuration,  # ty: ignore[invalid-argument-type]
     concurrency_limit=5 if is_space() else None,
     time_limit=90 if is_space() else None,
     ui_args={

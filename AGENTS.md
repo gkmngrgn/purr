@@ -14,7 +14,11 @@ Documented solutions live in `docs/solutions/` (organized by category with YAML 
   `uv pip compile pyproject.toml --python-version 3.12 --universal --output-file requirements.txt`
 - Install: `uv pip install -r requirements.txt`. A `.venv/` exists; on Windows use `.venv\Scripts\python.exe` (README's `. .venv/bin/activate` is POSIX-only).
 - Run: `python app.py` -> http://localhost:7860
-- Verify: `python smoke_test.py` (from the repo root). This is the only test; there is no pytest/lint/typecheck config. It spawns subprocesses with `sys.executable` and exits non-zero on failure, so run it with the interpreter you want tested.
+- Verify: `python smoke_test.py` (from the repo root). This is the only test. Type checks run through pre-commit: `uvx pre-commit run --all-files` (see Typing). It spawns subprocesses with `sys.executable` and exits non-zero on failure, so run it with the interpreter you want tested.
+
+## Typing
+- Production code is statically typed. Annotate function signatures, module-level state, and non-obvious locals, and prefer precise types over `Any`. Reserve dynamic typing for throwaway scripts.
+- Two hooks run on every commit (`.pre-commit-config.yaml`): `ruff` enforces the `ANN` annotation rules (`select = ["ANN"]` in `[tool.ruff.lint]`), and `ty` checks the types. Run `uvx pre-commit install` once to enable them, or `uvx pre-commit run --all-files` to check everything on demand.
 
 ## Environment / secrets
 - `HF_TOKEN` (Inference Providers, and TURN on Spaces) and `AIC_SDK_LICENSE` (Quail) are read from the environment at call time.

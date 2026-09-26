@@ -4,7 +4,7 @@ emoji: 🎙️
 colorFrom: green
 colorTo: green
 sdk: gradio
-sdk_version: 6.28.0
+sdk_version: 5.50.0
 python_version: '3.12'
 app_file: app.py
 pinned: false
@@ -35,12 +35,20 @@ Configure both in **Space → Settings → Variables and secrets**:
 
 ## Run locally
 
+`pyproject.toml` is the source of truth for dependencies; `requirements.txt` is generated from it with [uv](https://docs.astral.sh/uv/). Do not hand-edit `requirements.txt`.
+
 ```bash
-python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-export HF_TOKEN=hf_...
-export AIC_SDK_LICENSE=...
+uv venv --python 3.12 && . .venv/bin/activate   # Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
+export HF_TOKEN=hf_...            # Windows: $env:HF_TOKEN = "hf_..."
+export AIC_SDK_LICENSE=...        # Windows: $env:AIC_SDK_LICENSE = "..."
 python app.py
+```
+
+After changing dependencies in `pyproject.toml`, regenerate the lock:
+
+```bash
+uv pip compile pyproject.toml --python-version 3.12 --universal --output-file requirements.txt
 ```
 
 Open http://localhost:7860. WebRTC in a browser works without a token (TURN credentials are only fetched on Spaces).

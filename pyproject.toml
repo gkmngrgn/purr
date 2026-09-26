@@ -1,0 +1,21 @@
+[project]
+name = "purr"
+version = "0.1.0"
+description = "Real-time speech-to-text: Quail enhancement + Whisper via HF Inference Providers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastrtc[vad]==0.0.34",
+    # Must match `sdk_version` in README.md; the Space build installs
+    # `gradio[oauth,mcp]==<sdk_version>` and fastrtc 0.0.34 caps gradio<6.
+    "gradio==5.50.0",
+    "aic-sdk==3.2.0",
+    "huggingface_hub>=1.33.0",
+    "librosa>=0.11",
+    "numpy>=1.26",
+    "scipy>=1.13",
+]
+
+# This is an application, not a distributable package.
+[tool.uv]
+package = false

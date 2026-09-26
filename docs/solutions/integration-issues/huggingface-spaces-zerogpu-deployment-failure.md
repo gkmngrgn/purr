@@ -77,7 +77,7 @@ except ImportError:  # local dev
     spaces = None
 ```
 
-and, after the `Stream(...)` is constructed (`app.py:237-253`), registers a probe that ZeroGPU's scan can see (`app.py:262-270`):
+and, after the `Stream(...)` is constructed, registers a probe that ZeroGPU's scan can see (search for `_zerogpu_startup_probe`):
 
 ```python
 if spaces is not None:

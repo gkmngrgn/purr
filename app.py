@@ -148,30 +148,38 @@ class AICVadAdapter:
         self._vad = None
         self._config = None
         self._lock = threading.Lock()
+        self.windows = 0  # completed VAD window evaluations
+        self.unavailable: str | None = None  # first detector failure, if any
 
     def _ensure(self) -> tuple[aic.Vad, aic.ProcessorConfig]:
+        if self.unavailable is not None:
+            raise RuntimeError(self.unavailable)
         if self._vad is not None and self._config is not None:
             return self._vad, self._config
         with self._lock:
             if self._vad is None:
-                import aic_sdk as aic
+                try:
+                    import aic_sdk as aic
 
-                license_key = os.environ.get("AIC_SDK_LICENSE")
-                if not license_key:
-                    raise RuntimeError("AIC_SDK_LICENSE is not set.")
-                model = load_vad_model()
-                config = aic.ProcessorConfig.optimal(model)
-                self._vad = aic.Vad(model, license_key, config)
-                self._config = config
+                    license_key = os.environ.get("AIC_SDK_LICENSE")
+                    if not license_key:
+                        raise RuntimeError("AIC_SDK_LICENSE is not set.")
+                    model = load_vad_model()
+                    config = aic.ProcessorConfig.optimal(model)
+                    self._vad = aic.Vad(model, license_key, config)
+                    self._config = config
+                except Exception as exc:
+                    self.unavailable = str(exc)
+                    raise
         assert self._vad is not None and self._config is not None
         return self._vad, self._config
 
     def warmup(self) -> None:
-        """Build the detector ahead of the first window; never fatal."""
+        """Best-effort: build the detector before the first window."""
         try:
             self._ensure()
-        except Exception as exc:
-            print(f"[vad] warmup failed: {exc}")
+        except Exception:
+            pass
 
     def vad(self, audio: tuple[int, np.ndarray], options: object | None = None) -> tuple[float, list[AudioChunk]]:
         """Return ``(speech_seconds, [])`` for one FastRTC audio window."""
@@ -189,11 +197,14 @@ class AICVadAdapter:
                 vad.process(block)
                 if float(ctx.raw_vad_probability()) >= VAD_SPEECH_THRESHOLD:
                     speech_blocks += 1
+            self.windows += 1
             return speech_blocks * block_size / sample_rate, []
         except Exception as exc:
-            # Fail closed: report no speech, so no turn starts and no audio
-            # accumulates, rather than a sentinel that starts a turn that never ends.
-            print(f"[vad] detector unavailable: {exc}")
+            # Fail closed (no turn starts, no audio accumulates) and record the
+            # failure once so later windows do not retry or re-log it.
+            if self.unavailable is None:
+                self.unavailable = str(exc)
+                print(f"[vad] detector unavailable: {exc}")
             return 0.0, []
 
 
@@ -341,6 +352,8 @@ class SpeechAwarePauseHandler(ReplyOnPause):
         self._press_active = False
         self._no_speech_sent = False
         self._turn_fired = False
+        self._unavailable_notified = False
+        self._windows_at_press_start = 0
 
     def start_up(self) -> None:
         super().start_up()
@@ -372,6 +385,8 @@ class SpeechAwarePauseHandler(ReplyOnPause):
             # no-speech line until the user actually starts a new press.
             self._no_speech_sent = False
             self._turn_fired = False
+            self._unavailable_notified = False
+            self._windows_at_press_start = getattr(self.model, "windows", 0)
         self._last_audio_time = now
         self._press_active = True
         super().receive(frame)
@@ -381,7 +396,7 @@ class SpeechAwarePauseHandler(ReplyOnPause):
         if out is not None:
             self._turn_fired = True
             return out
-        if (
+        if not (
             self._press_active
             and not self._turn_fired
             and not self._no_speech_sent
@@ -390,13 +405,24 @@ class SpeechAwarePauseHandler(ReplyOnPause):
             and self.generator is None
             and (time.monotonic() - self._last_audio_time) >= self._silence_gap_s
         ):
-            self._no_speech_sent = True
-            self._press_active = False
-            transcript = self.latest_args[-1] if self.latest_args else ""
-            if not isinstance(transcript, str):
-                transcript = ""
-            return AdditionalOutputs(append_transcript_line(transcript, NO_SPEECH_LINE))
-        return None
+            return None
+        self._no_speech_sent = True
+        self._press_active = False
+        transcript = self.latest_args[-1] if self.latest_args else ""
+        if not isinstance(transcript, str):
+            transcript = ""
+        reason = getattr(self.model, "unavailable", None)
+        if reason is not None:
+            if self._unavailable_notified:
+                return None
+            self._unavailable_notified = True
+            line = f"[turn detection unavailable: {reason}]"
+        elif getattr(self.model, "windows", 0) <= self._windows_at_press_start:
+            # Too short for the detector to have evaluated a window: stay silent.
+            return None
+        else:
+            line = NO_SPEECH_LINE
+        return AdditionalOutputs(append_transcript_line(transcript, line))
 
 
 # ---------------------------------------------------------------------------

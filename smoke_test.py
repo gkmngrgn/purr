@@ -58,36 +58,97 @@ assert app.NO_SPEECH_LINE not in text
 print("no-words label OK")
 """)
 
-run("a spoken turn does not also emit a no-speech line", """
-import time
+run("aic VAD adapter computes speech-seconds (fake aic_sdk)", r"""
+import os, sys, types
 import numpy as np
+
+class _Model:
+    @staticmethod
+    def download(model_id, download_dir): return "fake.aicmodel"
+    @staticmethod
+    def from_file(path): return _Model()
+
+class _Config:
+    sample_rate = 16000
+    block_size = 160
+
+class _Ctx:
+    def __init__(self): self._p = 0.0
+    def reset(self): self._p = 0.0
+    def raw_vad_probability(self): return self._p
+
+class _Vad:
+    def __init__(self, model, license_key, config=None): self._ctx = _Ctx()
+    def get_context(self): return self._ctx
+    def process(self, block): self._ctx._p = 0.9 if float(np.max(np.abs(block))) > 0.05 else 0.0
+
+fake = types.ModuleType("aic_sdk")
+fake.Model = _Model
+fake.ProcessorConfig = types.SimpleNamespace(optimal=lambda model, **kw: _Config())
+fake.Vad = _Vad
+sys.modules["aic_sdk"] = fake
+os.environ["AIC_SDK_LICENSE"] = "fake"
+
 import app
-h = app.SpeechAwarePauseHandler(lambda audio, mode, transcript: iter(()), model=app.AICVadAdapter())
-h.latest_args = [None, "raw", "prev"]
-h.receive((48000, np.zeros(4800, dtype=np.float32)))
-h._turn_fired = True
-h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
-assert h.emit() is None
-print("no double append OK")
+adapter = app.AICVadAdapter()
+speech = (0.5 * np.sin(2*np.pi*220*np.linspace(0, 0.3, 14400))).astype(np.float32)
+dur, chunks = adapter.vad((48000, speech))
+assert dur > 0.0 and chunks == [], (dur, chunks)
+assert adapter.windows == 1
+silence = np.zeros(14400, dtype=np.float32)
+dur2, _ = adapter.vad((48000, silence))
+assert dur2 == 0.0, dur2
+print("vad happy path OK", round(dur, 3))
 """)
 
-run("speechless press emits no-speech line without transcription", r"""
+run("speechless press and turn handling (stub detector)", r"""
 import time
 import numpy as np
 import app
-h = app.SpeechAwarePauseHandler(lambda audio, mode, transcript: iter(()), model=app.AICVadAdapter())
-h.latest_args = [None, "enhanced", "existing"]
-h.receive((48000, np.zeros(4800, dtype=np.float32)))
-h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
+
+class StubVad:
+    def __init__(self):
+        self.windows = 0
+        self.unavailable = None
+    def warmup(self):
+        pass
+    def vad(self, audio, options=None):
+        self.windows += 1
+        return 0.0, []
+
+def handler(model):
+    h = app.SpeechAwarePauseHandler(lambda audio, mode, transcript: iter(()), model=model)
+    h.latest_args = [None, "raw", "prev"]
+    return h
+
+def press_and_release(h, seconds):
+    # one buffered frame of `seconds` audio, then a release-length gap
+    h.receive((48000, np.zeros(int(48000 * seconds), dtype=np.float32)))
+    h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
+
+# a long silent press emits the no-speech line (the detector evaluated a window)
+h = handler(StubVad())
+press_and_release(h, 0.7)
 out = h.emit()
 assert isinstance(out, app.AdditionalOutputs), out
-assert out.args[0] == "existing\n" + app.NO_SPEECH_LINE, out.args
-# a second silent press must emit again
-h.receive((48000, np.zeros(4800, dtype=np.float32)))
-h._last_audio_time = time.monotonic() - (h._silence_gap_s + 1)
-out2 = h.emit()
-assert isinstance(out2, app.AdditionalOutputs), out2
-assert out2.args[0] == "existing\n" + app.NO_SPEECH_LINE, out2.args
+assert out.args[0] == "prev\n" + app.NO_SPEECH_LINE, out.args
+
+# a press too short for the detector window is not labelled no-speech
+h2 = handler(StubVad())
+press_and_release(h2, 0.1)
+assert h2.emit() is None
+
+# a completed turn suppresses the no-speech line for that press
+h3 = handler(StubVad())
+press_and_release(h3, 0.7)
+h3._turn_fired = True
+assert h3.emit() is None
+
+# frames that never stop (no release gap) do not emit
+h4 = handler(StubVad())
+h4.receive((48000, np.zeros(28800, dtype=np.float32)))
+h4.receive((48000, np.zeros(28800, dtype=np.float32)))
+assert h4.emit() is None
 print("speechless press OK")
 """)
 

@@ -33,16 +33,36 @@ cfg = app.stream.ui.get_config_file()
 ids = {c["type"]: c["id"] for c in cfg["components"]}
 tx, radio, webrtc = ids["textbox"], ids["radio"], ids["webrtc"]
 comps = cfg["components"]
+by_id = {c["id"]: c for c in comps}
 types = [c["type"] for c in comps]
 assert types.count("textbox") == 1, "layout must not add a second textbox"
 assert types.count("radio") == 1, "layout must not add a second radio"
 tx_props = next(c["props"] for c in comps if c["type"] == "textbox")
 assert tx_props["autoscroll"] is True, "transcript must auto-follow"
 assert tx_props["interactive"] is False, "transcript must stay read-only"
-row_props = next(c["props"] for c in comps if c["type"] == "row")
-assert "purr-layout" in (row_props.get("elem_classes") or []), "two-region shell missing"
 w_props = next(c["props"] for c in comps if c["type"] == "webrtc")
 assert "purr-webrtc" in (w_props.get("elem_classes") or []), "source-picker scoping hook missing"
+
+def _descendants(node):
+    for child in node.get("children", []):
+        yield child
+        yield from _descendants(child)
+
+def _classes(node):
+    return by_id.get(node["id"], {}).get("props", {}).get("elem_classes") or []
+
+def _nested(root_id, target_id):
+    root = next((n for n in _descendants(cfg["layout"]) if n["id"] == root_id), None)
+    return root is not None and any(n["id"] == target_id for n in _descendants(root))
+
+row = next(n for n in _descendants(cfg["layout"]) if "purr-layout" in _classes(n))
+pane = next(n["id"] for n in _descendants(row) if "transcript-pane" in _classes(n))
+rail = next(n["id"] for n in _descendants(row) if "control-rail" in _classes(n))
+assert _nested(pane, tx), "transcript must sit in the transcript pane"
+assert _nested(rail, webrtc), "webrtc must sit in the control rail"
+assert _nested(rail, radio), "enhancement selector must sit in the control rail"
+for sel in (".purr-layout", ".transcript-pane > .form", ".purr-webrtc .select-wrap", "@media (max-width: 768px)"):
+    assert sel in app.APP_CSS, f"APP_CSS missing {sel}"
 deps = cfg["dependencies"]
 assert any(set(d.get("inputs") or []) >= {webrtc, radio} for d in deps), "stream must take (webrtc, mode)"
 assert any((d.get("outputs") or []) == [tx] for d in deps), "transcript must be the stream output"

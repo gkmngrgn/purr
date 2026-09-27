@@ -566,6 +566,7 @@ transcript = gr.Textbox(
     label="Transcript",
     placeholder="Tap the mic and start speaking — text appears as you talk.",
     interactive=False,
+    autoscroll=True,
     lines=14,
     max_lines=14,
     elem_classes=["transcript-box"],
@@ -608,12 +609,24 @@ APP_CSS = """
 /* Two-region shell: the transcript pane owns the space, the rail holds controls. */
 .purr-layout {
     gap: 1.25rem;
-    align-items: stretch;
+    align-items: stretch !important;
 }
 .transcript-pane {
     display: flex;
     flex-direction: column;
     min-height: 0;
+}
+/* Gradio auto-wraps each component in a form whose scale sets flex-grow: 0.
+   Include it in the height chain and clear its chrome so the textarea fills. */
+.transcript-pane > .form {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+    background: transparent;
+    border: none;
+    box-shadow: none;
 }
 .control-rail {
     justify-content: flex-start;
@@ -711,6 +724,7 @@ APP_CSS = """
     .purr-layout > .transcript-pane,
     .purr-layout > .control-rail { width: 100% !important; flex: none !important; }
     .transcript-pane { min-height: 0; }
+    .transcript-pane > .form { flex: none; }
     .transcript-box,
     .transcript-box label,
     .transcript-box .input-container { flex: none; }

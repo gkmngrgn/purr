@@ -16,6 +16,12 @@ tags: [fastrtc, vad, ai-coustics, pause-detection, gradio, adapter]
 
 # Using an ai-coustics VAD as FastRTC's pause detector
 
+> **Superseded (2026-09-27).** Purr replaced turn-based pause detection with
+> continuous streaming transcription. `ReplyOnPause`, `AICVadAdapter`, and the
+> speechless-press handling described below no longer exist in `app.py`. Kept
+> for the reusable FastRTC lessons: the `PauseDetectionModel` adapter contract,
+> per-connection detector construction, and fail-closed behavior.
+
 ## Problem
 
 FastRTC's `ReplyOnPause` defaults to the bundled Silero VAD, so the app fetched `silero_vad.onnx` at runtime even though the pipeline is meant to be a single ai-coustics stack. Replacing the detector requires implementing FastRTC's `PauseDetectionModel` protocol and working around several framework behaviours that are not obvious from the call site.

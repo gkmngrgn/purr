@@ -1,8 +1,8 @@
 # AGENTS.md
 
 ## What this is
-Single-file Hugging Face Gradio Space for real-time speech-to-text (`app.py`).
-Pipeline: mic -> FastRTC `ReplyOnPause` (WebRTC) -> optional Quail enhancement (aic-sdk, CPU) -> Whisper via HF Inference Providers -> transcript. `README.md` is the Space card and deployment notes.
+Single-file Hugging Face Gradio Space for streaming speech-to-text (`app.py`).
+Pipeline: mic -> FastRTC WebRTC -> optional Quail enhancement (aic-sdk, CPU, per connection) -> local streaming ASR (faster-whisper or Moonshine, CPU) -> live transcript. `README.md` is the Space card and deployment notes.
 Documented solutions live in `docs/solutions/` (organized by category with YAML frontmatter: `module`, `tags`, `problem_type`); shared domain vocabulary is in `CONCEPTS.md`. Relevant when implementing or debugging in documented areas.
 
 ## Deploy
@@ -21,16 +21,17 @@ Documented solutions live in `docs/solutions/` (organized by category with YAML 
 - Two hooks run on every commit (`.pre-commit-config.yaml`): `ruff` enforces the `ANN` annotation rules (`select = ["ANN"]` in `[tool.ruff.lint]`), and `ty` checks the types. Run `uvx pre-commit install` once to enable them, or `uvx pre-commit run --all-files` to check everything on demand.
 
 ## Environment / secrets
-- `HF_TOKEN` (Inference Providers, and TURN on Spaces) and `AIC_SDK_LICENSE` (Quail) are read from the environment at call time.
-- Importing `app` and constructing the UI must succeed with neither secret set (the smoke test asserts this). Quail and transcription only fail when actually invoked.
+- `AIC_SDK_LICENSE` (Quail) is read from the environment at call time. There is **no `HF_TOKEN` requirement** — ASR runs locally.
+- Optional Cloudflare TURN on Spaces: `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN` (see `rtc_configuration()`).
+- Importing `app` and constructing the UI must succeed with no secrets set (the smoke test asserts this). Quail and ASR only fail when actually invoked.
 
 ## Invariants that are easy to break
 - The `gradio` pin in `pyproject.toml` must equal `sdk_version` in `README.md` (currently `5.50.0`). The Gradio Space build injects `gradio[oauth,mcp]==<sdk_version>`, and `fastrtc==0.0.34` caps `gradio<6`; bumping `sdk_version` to Gradio 6 makes `pip` fail with `ResolutionImpossible`.
-- The Space runs on ZeroGPU (Hugging Face's free Gradio tier). ZeroGPU refuses to start unless the app has at least one Gradio event handler bound to a `@spaces.GPU` function. `app.py` binds the no-op `_zerogpu_startup_probe` to `stream.ui`; keep it bound to a Gradio event (defining it alone is not enough — the startup scan walks Gradio's registered handlers). The app itself is CPU-only.
-- `process(audio, mode, transcript)` is invoked positionally from the WebRTC stream event wired in `build_ui()` (`webrtc.stream(inputs=[webrtc, mode_radio, transcript])`); keep those components and that order in sync. The transcript Textbox is `interactive=False` but remains a live input: FastRTC syncs additional inputs through the component's `change`/`tick` events, so it must stay in `inputs`.
+- The Space runs on ZeroGPU. ZeroGPU refuses to start unless the app has at least one Gradio event handler bound to a `@spaces.GPU` function. `app.py` binds the no-op `_zerogpu_startup_probe` to `stream.ui`; keep it bound to a Gradio event (defining it alone is not enough — the startup scan walks Gradio's registered handlers). The app itself is CPU-only.
+- `StreamingTranscriber` is a continuous `StreamHandler`, not `ReplyOnPause`: `receive()` appends each 16 kHz mono frame (optionally Quail-enhanced) to the current utterance, and `emit()` re-decodes it on a timer and returns `AdditionalOutputs(full_text)`. There is no turn/utterance-boundary input; a run of silence (`COMMIT_SILENCE_S`) or `MAX_UTTERANCE_S` commits a line. A partial decode uses only the last `PARTIAL_WINDOW_S` of audio; a commit decodes the whole utterance. A decode failure must not mutate transcript state (it surfaces once and retries later).
+- UI wiring in `build_ui()`: `webrtc.stream(inputs=[webrtc, mode_radio], outputs=[webrtc])` and `webrtc.on_additional_outputs(_replace_transcript, inputs=[transcript], outputs=[transcript])`. The handler finds the enhancement mode by scanning `latest_args` for a `MODE_CHOICES` value; FastRTC's base `set_args` prepends the `"__webrtc_value__"` placeholder. Keep the components and their order in sync.
 - Yield `AdditionalOutputs(value)` (bare value), never `AdditionalOutputs((value,))`. With a single output component Gradio wraps the prediction without unpacking, so the wrapped form renders the Textbox as a Python tuple like `('text',)`.
-- FastRTC calls the outputs handler as `handler(current_component_value, *AdditionalOutputs.args)`; the first argument is the current transcript value, not the WebRTC id.
-- `AIC_SAMPLE_RATE` must stay 16000 (Quail native). Playback uses `OUTPUT_SAMPLE_RATE = 24000`, which must match `ReplyOnPause`'s default `output_sample_rate`.
-- Audio yielded for playback is `(24000, int16 ndarray of shape (1, N))`.
-- The Quail `Processor` is a process-wide singleton guarded by `_proc_lock`; every utterance is serialized through it. Do not process concurrently without that lock.
-- `is_space()` (driven by `SYSTEM=spaces`) gates `concurrency_limit`, `time_limit`, and TURN credential lookup; local runs intentionally get no TURN and unlimited concurrency.
+- `AIC_SAMPLE_RATE` must stay 16000 (Quail native; incoming WebRTC frames are resampled there via the handler's `input_sample_rate`). `OUTPUT_SAMPLE_RATE = 24000` satisfies FastRTC's multiple-of-50 handler constraint; the app emits no audio, so it has no other effect.
+- Each connection gets its own `QuailStream` (a `Processor` + context), but the native `Processor.process` calls are serialized with the process-wide `_proc_lock`. Do not process concurrently without that lock.
+- ASR is local and loaded lazily (`get_transcriber`): `PURR_ASR_ENGINE` selects `faster-whisper` (default, multilingual, `PURR_ASR_MODEL`, default `base`) or `moonshine` (`PURR_MOONSHINE_MODEL`). `_transcribe_lock` serializes decodes across connections. Never load a model at import.
+- There is no audio playback by design: continuously echoing the mic would feed back through the speakers, so enhancement is observed through the transcript instead.

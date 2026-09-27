@@ -5,28 +5,28 @@ Shared domain vocabulary for this project — entities, named processes, and sta
 ## Speech pipeline
 
 ### Purr
-The demo application: a real-time speech-to-text Space that turns microphone speech into a cleaned transcript.
+The demo application: a streaming speech-to-text Space that turns microphone speech into a cleaned transcript.
 
-### Turn detection
-The stage that decides when a spoken utterance has ended, so the pipeline fires once per utterance rather than on a fixed timer. Purr gets the decision from ai-coustics' voice activity detector, whose verdict also distinguishes speech that produced no words from a press with no speech.
+### Continuous streaming
+The pipeline emits a live transcript while the user is still speaking. The current utterance is re-decoded on a timer and its result is shown as a partial; the pipeline does not wait for a pause before producing text.
+
+### Partial transcript
+The re-decoded hypothesis for the utterance in progress. It replaces the previous partial on each update and may change wording slightly as more audio arrives; it is distinct from the committed transcript lines behind it.
 
 ### Utterance
-One spoken input captured as a single continuous segment. It is the unit that gets enhanced, played back, and transcribed, and it is never split across stages.
+One spoken input, buffered into a single segment while the user talks. It is the unit that gets enhanced and re-decoded, and a run of silence (or reaching the maximum length) commits it to the transcript.
 
 ### Quail enhancement
-The optional speech-enhancement stage that cleans an utterance with ai-coustics Quail before playback and transcription. It runs on CPU rather than the GPU. When enhancement is unavailable — for example a missing license — the pipeline falls back to the unenhanced audio and annotates the transcript.
+The optional speech-enhancement stage that cleans an utterance with ai-coustics Quail before transcription. It runs on CPU as a per-connection streaming processor. When enhancement is unavailable — for example a missing license — the pipeline falls back to the raw audio and annotates the transcript.
 
 ### Enhancement mode
-The user-facing choice between *enhanced* (run Quail enhancement before playback and transcription) and *raw* (use the microphone audio as-is). Raw reveals the fidelity the transcriber actually receives.
+The user-facing choice between *enhanced* (run Quail enhancement before transcription) and *raw* (transcribe the microphone audio as-is). Raw reveals the fidelity the transcriber actually receives.
 
 ### Transcript
-The accumulated text output, appended to across utterances. It distinguishes recognized words from two non-word outcomes: speech that produced no words, and a press with no speech at all.
+The accumulated text output: the committed lines from finished utterances followed by the live partial. Enhancement is observed through the transcript rather than through audio playback, which is intentionally absent to avoid feedback.
 
-### Speechless press
-A press-and-release during which the turn detector confirms no speech. It is reported as a distinct no-speech line rather than a transcription failure, and it is separate from an utterance that produced no recognized words.
-
-### Whisper transcription
-The speech-to-text stage. It sends the (possibly enhanced) utterance to Whisper through Hugging Face Inference Providers rather than running a model locally.
+### Local ASR
+The speech-to-text stage. It runs on the Space's CPU (faster-whisper by default, Moonshine optional) rather than through a hosted provider, so there is no per-request network latency, token, or cost. Backend and checkpoint are selected by `PURR_ASR_ENGINE` / `PURR_ASR_MODEL`.
 
 ## Space deployment
 

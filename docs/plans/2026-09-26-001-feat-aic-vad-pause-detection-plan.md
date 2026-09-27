@@ -11,6 +11,10 @@ execution: code
 
 # ai-coustics VAD Turn Detection - Plan
 
+> **Superseded (2026-09-27).** This plan shipped turn-based pause detection with
+> `ReplyOnPause` + `AICVadAdapter`; Purr has since moved to continuous streaming
+> transcription and that machinery was removed. Kept as a historical record.
+
 ## Goal Capsule
 
 - **Objective:** Replace FastRTC's default Silero pause detector with ai-coustics' `Vad`, and use that VAD's verdict to make the transcript's silence reporting honest.

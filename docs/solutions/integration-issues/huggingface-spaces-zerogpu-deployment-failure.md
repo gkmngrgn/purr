@@ -91,7 +91,7 @@ if spaces is not None:
         _zerogpu_probe.click(fn=_zerogpu_startup_probe, inputs=None, outputs=None)
 ```
 
-The probe is never invoked at runtime; it exists only to satisfy the startup scan. The app itself remains CPU-only (Quail on CPU, Whisper via HF Inference Providers).
+The probe is never invoked at runtime; it exists only to satisfy the startup scan. The app itself remains CPU-only (Quail and the local ASR both run on CPU).
 
 ## Why This Works
 
@@ -113,4 +113,4 @@ The two failures came from separate layers, so they needed separate fixes.
 
 - Repo deployment notes and invariants: `README.md:63-68` (Notes: ZeroGPU probe, paid-plan caveat) and `AGENTS.md:22-24` (the two `sdk_version`/ZeroGPU invariants).
 - Commits pushed to the Space remote on `main`: `57bf827` (align Gradio pin with `sdk_version`), `dc0ccc7` (no-op `@spaces.GPU` probe). The failing commit was `bac205a`. This repo's remote is a Hugging Face Space, not GitHub, so there is no PR/merge history for these changes.
-- Unfixed caveat: the Space has no secrets configured, so `AIC_SDK_LICENSE` (Quail) and `HF_TOKEN` (Inference Providers + TURN) are unset at runtime; Quail falls back to raw audio (`app.py:187-192`) and transcription errors (`app.py:199-202`). This is a user-side configuration gap documented at `README.md:27-34`, not a code defect.
+- Unfixed caveat: the Space has no secrets configured, so `AIC_SDK_LICENSE` (Quail) is unset at runtime and Quail falls back to raw audio. This is a user-side configuration gap documented at `README.md` (Secrets), not a code defect.

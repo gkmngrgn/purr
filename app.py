@@ -1,23 +1,27 @@
-"""Purr: real-time speech-to-text on the HF Stack.
+"""Purr: real-time streaming speech-to-text on the HF Stack.
 
-Pipeline:  mic -> FastRTC (WebRTC) -> Quail enhancement (optional) -> Whisper
-via Inference Providers -> transcript.
+Pipeline:  mic -> FastRTC (WebRTC) -> optional Quail enhancement -> local
+streaming ASR -> live transcript.
 
-Deploys as a Gradio Space. Requires two secrets:
-    HF_TOKEN          token with "Make calls to Inference Providers" permission
+The transcript streams while you speak: incoming audio is enhanced block by
+block, buffered into the current utterance, and re-decoded every fraction of a
+second, so partial text appears immediately instead of after a pause. A run of
+silence commits the utterance and starts a new line.
+
+Deploys as a Gradio Space. Requires one secret:
     AIC_SDK_LICENSE   ai-coustics SDK license key (https://developers.ai-coustics.com)
+
+ASR runs locally on CPU (faster-whisper by default, Moonshine optional), so no
+Inference Providers token or hosted credits are needed.
 """
 
 from __future__ import annotations
 
-import io
 import os
 import threading
 import time
 import warnings
-import wave
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
@@ -36,13 +40,13 @@ import gradio as gr
 from gradio.utils import get_space
 
 import librosa
-from fastrtc import AdditionalOutputs, ReplyOnPause, Stream, WebRTC, WebRTCData
+from fastrtc import AdditionalOutputs, Stream, StreamHandler, WebRTC
 
 if TYPE_CHECKING:
     import aic_sdk as aic
+    import numpy.typing as npt
+    from faster_whisper import WhisperModel
     from fastrtc.tracks import EmitType
-    from fastrtc.utils import AudioChunk
-    from huggingface_hub import InferenceClient
 
 # Gradio 5.50 warns that `gr.Blocks(css=...)` will move to `Blocks.launch(css=...)`
 # in Gradio 6, but Gradio 6 is unreachable while fastrtc caps `gradio<6`, and the
@@ -60,17 +64,30 @@ warnings.filterwarnings(
 
 QUAIL_MODEL_ID = "quail-ms-l-16khz"  # Quail Multi-Speaker: tuned for STT accuracy
 MODELS_DIR = "models"
-AIC_SAMPLE_RATE = 16000  # Quail native sample rate
+AIC_SAMPLE_RATE = 16000  # Quail native sample rate; input frames are resampled here
 OUTPUT_SAMPLE_RATE = 24000  # FastRTC output sample rate (multiple of 50)
-WHISPER_MODEL = "openai/whisper-large-v3"
-VAD_MODEL_ID = "vad-2.1-xxs-16khz"  # ai-coustics dedicated VAD model
-VAD_SPEECH_THRESHOLD = 0.5  # raw per-block probability treated as speech
-SILENCE_GAP_S = 1.5  # no-input gap that marks the end of a silent press
-NO_SPEECH_LINE = "[no speech detected]"
-NO_WORDS_LINE = "[speech detected, but no words recognized]"
-TEST_AUDIO_URL = (
-    "https://storage.googleapis.com/media-session/sintel/snow-fight.mp3"
-)
+
+# Enhancement modes, shared by the streaming handler and the UI radio.
+MODE_ENHANCED = "enhanced"
+MODE_RAW = "raw"
+MODE_CHOICES = (MODE_ENHANCED, MODE_RAW)
+
+# ASR backend. Both run locally on CPU; no hosted inference is involved.
+#   engine "faster-whisper" -> multilingual Whisper (PURR_ASR_MODEL, default base)
+#   engine "moonshine"      -> English-only, lower latency (PURR_MOONSHINE_MODEL)
+ASR_ENGINE = os.environ.get("PURR_ASR_ENGINE", "faster-whisper").strip().lower()
+ASR_MODEL = os.environ.get("PURR_ASR_MODEL", "base")
+MOONSHINE_MODEL = os.environ.get("PURR_MOONSHINE_MODEL", "moonshine/base")
+
+# Streaming tunables.
+DECODE_INTERVAL_S = 0.9  # minimum gap between partial decodes
+MIN_DECODE_AUDIO_S = 0.5  # minimum new audio before a partial decode
+PARTIAL_WINDOW_S = 8.0  # recent audio decoded for a live partial (commit uses all)
+COMMIT_SILENCE_S = 0.9  # silence that commits the current utterance
+MAX_UTTERANCE_S = 20.0  # force-commit a very long utterance, bounding decode cost
+PRE_ROLL_S = 0.4  # pre-speech audio kept for ASR context
+SPEECH_RMS = 0.008  # per-chunk RMS treated as speech
+EMIT_IDLE_SLEEP_S = 0.02  # back-off when there is nothing to emit
 
 
 def is_space() -> bool:
@@ -86,18 +103,7 @@ def is_space() -> bool:
 
 _init_lock = threading.Lock()
 _proc_lock = threading.Lock()
-_quail: dict[str, Any] = {}
-_client_cache: list[InferenceClient] = []
-
-
-def get_hf_client() -> InferenceClient:
-    if not _client_cache:
-        with _init_lock:
-            if not _client_cache:
-                from huggingface_hub import InferenceClient
-
-                _client_cache.append(InferenceClient(provider="auto"))
-    return _client_cache[0]
+_quail_model: dict[str, Any] = {}
 
 
 def _load_aic_model(model_id: str) -> aic.Model:
@@ -108,116 +114,167 @@ def _load_aic_model(model_id: str) -> aic.Model:
     return aic.Model.from_file(model_path)
 
 
-def load_quail() -> tuple[aic.Processor, aic.ProcessorConfig]:
-    """Download (once) and initialize the Quail enhancement processor."""
+def load_quail_model() -> tuple[aic.Model, str]:
+    """Download (once) and cache the Quail model plus its license key.
+
+    The processor is built per connection (see ``QuailStream``) because its
+    enhancement state is stateful; only the model download is shared.
+    """
     with _init_lock:
-        if "processor" in _quail:
-            return _quail["processor"], _quail["config"]
-        import aic_sdk as aic
-
-        license_key = os.environ.get("AIC_SDK_LICENSE")
-        if not license_key:
-            raise RuntimeError("AIC_SDK_LICENSE is not set.")
-        model = _load_aic_model(QUAIL_MODEL_ID)
-        processor = aic.Processor(model, license_key)
-        config = aic.ProcessorConfig.optimal(model, sample_rate=AIC_SAMPLE_RATE)
-        processor.initialize(config)
-        _quail["processor"] = processor
-        _quail["config"] = config
-        return processor, config
+        if "model" not in _quail_model:
+            license_key = os.environ.get("AIC_SDK_LICENSE")
+            if not license_key:
+                raise RuntimeError("AIC_SDK_LICENSE is not set.")
+            _quail_model["model"] = _load_aic_model(QUAIL_MODEL_ID)
+            _quail_model["license"] = license_key
+        return _quail_model["model"], _quail_model["license"]
 
 
-# ---------------------------------------------------------------------------
-# Pause detection (ai-coustics VAD)
-# ---------------------------------------------------------------------------
+class QuailStream:
+    """Per-connection streaming Quail enhancement.
 
-_vad_model: dict[str, Any] = {}
-_vad_lock = threading.Lock()
-
-
-def load_vad_model() -> aic.Model:
-    """Download (once) and load the ai-coustics VAD model (no license needed)."""
-    with _vad_lock:
-        if "model" in _vad_model:
-            return _vad_model["model"]
-        model = _load_aic_model(VAD_MODEL_ID)
-        _vad_model["model"] = model
-        return model
-
-
-class AICVadAdapter:
-    """FastRTC pause detector backed by ai-coustics' voice activity detector.
-
-    One instance per WebRTC connection; the downloaded model is cached
-    process-wide. Each FastRTC window is treated independently: the detector
-    context is reset, the window is resampled to the model's native rate, and
-    speech-seconds are derived from the raw per-block probability (the
-    post-processed ``is_speech_detected`` flag carries hold hysteresis that
-    would mask pauses).
+    Audio is re-blocked to the model's block size and processed continuously,
+    with one processor state across the whole session. A process-wide lock
+    serializes the native ``process`` calls so concurrent sessions never touch
+    the SDK at the same time.
     """
 
-    def __init__(self) -> None:
-        self._vad = None
-        self._config = None
-        self._lock = threading.Lock()
-        self.windows = 0  # completed VAD window evaluations
-        self.unavailable: str | None = None  # first detector failure, if any
+    def __init__(self, sample_rate: int = AIC_SAMPLE_RATE) -> None:
+        import aic_sdk as aic
 
-    def _ensure(self) -> tuple[aic.Vad, aic.ProcessorConfig]:
-        if self.unavailable is not None:
-            raise RuntimeError(self.unavailable)
-        if self._vad is not None and self._config is not None:
-            return self._vad, self._config
-        with self._lock:
-            if self._vad is None:
-                try:
-                    import aic_sdk as aic
+        model, license_key = load_quail_model()
+        self._processor = aic.Processor(model, license_key)
+        config = aic.ProcessorConfig.optimal(model, sample_rate=sample_rate)
+        self._processor.initialize(config)
+        self._block = int(config.block_size)
+        self._residual = np.zeros(0, dtype=np.float32)
 
-                    license_key = os.environ.get("AIC_SDK_LICENSE")
-                    if not license_key:
-                        raise RuntimeError("AIC_SDK_LICENSE is not set.")
-                    model = load_vad_model()
-                    config = aic.ProcessorConfig.optimal(model)
-                    self._vad = aic.Vad(model, license_key, config)
-                    self._config = config
-                except Exception as exc:
-                    self.unavailable = str(exc)
-                    raise
-        assert self._vad is not None and self._config is not None
-        return self._vad, self._config
+    def process(self, mono: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+        """Enhance a mono float32 buffer, returning however many full blocks complete."""
+        if mono.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        buf = np.concatenate([self._residual, mono.astype(np.float32)])
+        full = (len(buf) // self._block) * self._block
+        if full == 0:
+            self._residual = buf
+            return np.zeros(0, dtype=np.float32)
+        with _proc_lock:
+            out = [
+                self._processor.process(np.ascontiguousarray(buf[i : i + self._block]))
+                for i in range(0, full, self._block)
+            ]
+        self._residual = buf[full:]
+        return np.concatenate(out)
 
-    def warmup(self) -> None:
-        """Best-effort: build the detector before the first window."""
-        try:
-            self._ensure()
-        except Exception:
-            pass
 
-    def vad(self, audio: tuple[int, np.ndarray], options: object | None = None) -> tuple[float, list[AudioChunk]]:
-        """Return ``(speech_seconds, [])`` for one FastRTC audio window."""
-        try:
-            sr, arr = audio
-            vad, config = self._ensure()
-            block_size = int(config.block_size)
-            sample_rate = int(config.sample_rate)
-            mono = to_mono_float32((sr, arr))[1]
-            mono = resample(mono, sr, sample_rate)
-            ctx = vad.get_context()
-            ctx.reset()
-            speech_blocks = 0
-            for block in iter_blocks(mono, block_size):
-                vad.process(block)
-                if float(ctx.raw_vad_probability()) >= VAD_SPEECH_THRESHOLD:
-                    speech_blocks += 1
-            self.windows += 1
-            return speech_blocks * block_size / sample_rate, []
-        except Exception as exc:
-            # Fail closed (no turn starts, no audio accumulates) and record the
-            # failure once so later windows do not retry or re-log it.
-            if self.unavailable is None:
-                self.unavailable = str(exc)
-                print(f"[vad] detector unavailable: {exc}")
-            return 0.0, []
+# ---------------------------------------------------------------------------
+# ASR backends (local, CPU)
+# ---------------------------------------------------------------------------
+
+
+class Transcriber(Protocol):
+    def prepare(self) -> None: ...
+
+    def transcribe(
+        self, audio: npt.NDArray[np.float32], language: str | None
+    ) -> tuple[str, str | None]: ...
+
+
+class FasterWhisperTranscriber:
+    """Multilingual Whisper via faster-whisper (CTranslate2, int8 CPU)."""
+
+    def prepare(self) -> None:
+        _load_faster_whisper()
+
+    def transcribe(
+        self, audio: npt.NDArray[np.float32], language: str | None
+    ) -> tuple[str, str | None]:
+        segments, info = _load_faster_whisper().transcribe(
+            audio,
+            language=language,
+            beam_size=1,
+            vad_filter=False,
+            condition_on_previous_text=False,
+            without_timestamps=True,
+        )
+        return "".join(segment.text for segment in segments).strip(), (
+            info.language or language
+        )
+
+
+class MoonshineTranscriber:
+    """English-only Moonshine via the ONNX runtime bundled with FastRTC."""
+
+    def prepare(self) -> None:
+        from fastrtc import get_stt_model
+
+        with _asr_lock:
+            get_stt_model(MOONSHINE_MODEL)
+
+    def transcribe(
+        self, audio: npt.NDArray[np.float32], language: str | None
+    ) -> tuple[str, str | None]:
+        from fastrtc import get_stt_model
+
+        model = get_stt_model(MOONSHINE_MODEL)
+        text = model.stt((AIC_SAMPLE_RATE, audio))
+        return (text or "").strip(), "en"
+
+
+_asr_lock = threading.Lock()
+_asr: dict[str, Any] = {}
+_asr_ready = threading.Event()
+_asr_error: dict[str, str] = {}
+_faster_whisper: dict[str, Any] = {}
+
+
+def _load_faster_whisper() -> WhisperModel:
+    with _asr_lock:
+        if "error" in _faster_whisper:
+            # A failed load stays failed: do not re-download on every decode.
+            raise RuntimeError(_faster_whisper["error"])
+        if "model" not in _faster_whisper:
+            from faster_whisper import WhisperModel
+
+            try:
+                _faster_whisper["model"] = WhisperModel(
+                    ASR_MODEL, device="cpu", compute_type="int8"
+                )
+            except Exception as exc:
+                _faster_whisper["error"] = str(exc)
+                raise
+        return _faster_whisper["model"]
+
+
+def get_transcriber() -> Transcriber:
+    """Resolve (once) and cache the configured ASR backend."""
+    with _asr_lock:
+        if "impl" not in _asr:
+            _asr["impl"] = (
+                MoonshineTranscriber()
+                if ASR_ENGINE == "moonshine"
+                else FasterWhisperTranscriber()
+            )
+        return _asr["impl"]
+
+
+_transcribe_lock = threading.Lock()
+
+
+def warm_asr() -> None:
+    """Best-effort: load the ASR model off the request path.
+
+    The checkpoint is loaded lazily inside ``transcribe``; loading it here means
+    the first utterance does not block on the download, and a load failure is
+    recorded once (later decodes short-circuit on it instead of retrying).
+    """
+    try:
+        get_transcriber().prepare()
+    except Exception as exc:  # pragma: no cover - depends on the environment
+        _asr_error["message"] = str(exc)
+        print(f"[asr] unavailable: {exc}")
+    finally:
+        _asr_ready.set()
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +282,7 @@ class AICVadAdapter:
 # ---------------------------------------------------------------------------
 
 
-def to_mono_float32(audio: tuple[int, np.ndarray]) -> tuple[int, np.ndarray]:
+def to_mono_float32(audio: tuple[int, npt.NDArray[Any]]) -> tuple[int, npt.NDArray[np.float32]]:
     """Normalize a FastRTC (sr, array) tuple to (sr, mono float32 in [-1, 1])."""
     sr, arr = audio
     arr = np.asarray(arr)
@@ -239,72 +296,14 @@ def to_mono_float32(audio: tuple[int, np.ndarray]) -> tuple[int, np.ndarray]:
     return sr, np.clip(arr, -1.0, 1.0)
 
 
-def iter_blocks(x: np.ndarray, block_size: int) -> Iterator[np.ndarray]:
-    """Yield float32 blocks of ``block_size``, zero-padding the final block."""
-    for i in range(0, len(x), block_size):
-        block = np.ascontiguousarray(x[i : i + block_size], dtype=np.float32)
-        if len(block) < block_size:
-            block = np.pad(block, (0, block_size - len(block)))
-        yield block
-
-
-def resample(x: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+def resample(x: npt.NDArray[np.float32], orig_sr: int, target_sr: int) -> npt.NDArray[np.float32]:
     if x is None or len(x) == 0 or orig_sr == target_sr:
         return x
     return librosa.resample(x, orig_sr=orig_sr, target_sr=target_sr, res_type="soxr_hq")
 
 
-def enhance_16k(y16: np.ndarray) -> np.ndarray:
-    """Run Quail over a 16 kHz mono float32 buffer, resetting per utterance."""
-    if len(y16) == 0:
-        return y16
-    processor, config = load_quail()
-    block_size = int(config.block_size)
-    with _proc_lock:
-        ctx = processor.get_context()
-        ctx.reset()
-        out = [processor.process(block) for block in iter_blocks(y16, block_size)]
-        return np.concatenate(out)[: len(y16)]
-
-
-def to_int16(y: np.ndarray) -> np.ndarray:
-    return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
-
-
-def wav_bytes(y16: np.ndarray) -> bytes:
-    """Encode 16 kHz mono int16 samples as RIFF/WAV bytes (no ffmpeg needed)."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(AIC_SAMPLE_RATE)
-        w.writeframes(np.ascontiguousarray(y16, dtype=np.int16).tobytes())
-    return buf.getvalue()
-
-
-def transcribe_16k(y16: np.ndarray) -> str:
-    """Transcribe a 16 kHz mono float32 buffer with Whisper via Inference Providers."""
-    client = get_hf_client()
-    result = client.automatic_speech_recognition(
-        audio=wav_bytes(to_int16(y16)), model=WHISPER_MODEL
-    )
-    return (result.text or "").strip()
-
-
-def playback_chunks(y16: np.ndarray, chunk_s: float = 0.3) -> Iterator[tuple[int, np.ndarray]]:
-    """Yield (OUTPUT_SAMPLE_RATE, int16 mono) chunks for WebRTC playback."""
-    y24 = resample(y16, AIC_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
-    if len(y24) == 0:
-        return
-    y24i = to_int16(y24).reshape(1, -1)
-    step = int(OUTPUT_SAMPLE_RATE * chunk_s)
-    for i in range(0, len(y24i[0]), step):
-        yield (OUTPUT_SAMPLE_RATE, y24i[:, i : i + step])
-
-
-# ---------------------------------------------------------------------------
-# Stream handler
-# ---------------------------------------------------------------------------
+def rms(x: npt.NDArray[np.float32]) -> float:
+    return float(np.sqrt(np.mean(np.square(x)))) if x.size else 0.0
 
 
 def append_transcript_line(transcript: str, line: str) -> str:
@@ -312,147 +311,205 @@ def append_transcript_line(transcript: str, line: str) -> str:
     return f"{transcript}\n{line}" if transcript else line
 
 
-def process(audio: tuple[int, np.ndarray], mode: str | None, transcript: str) -> Iterator[tuple[int, np.ndarray] | AdditionalOutputs]:
-    """Handle one spoken utterance: enhance (optionally), play back, transcribe."""
-    sr, mono = to_mono_float32(audio)
-    y16 = resample(mono, sr, AIC_SAMPLE_RATE)
-
-    use_enhance = mode is None or mode == "enhanced"
-    note = ""
-    if use_enhance:
-        try:
-            enhanced = enhance_16k(y16)
-        except Exception as exc:
-            note = f"\n[Quail unavailable: {exc}]"
-            enhanced = y16
-    else:
-        enhanced = y16
-
-    # Stream the (possibly enhanced) audio back so the difference is audible.
-    yield from playback_chunks(enhanced)
-
-    try:
-        text = transcribe_16k(enhanced)
-    except Exception as exc:
-        text = f"[transcription error: {exc}]"
-
-    if not text:
-        # A turn only fires once the pause detector has confirmed speech, so an
-        # empty transcript here is a recognition miss, not silence.
-        text = NO_WORDS_LINE
-
-    yield AdditionalOutputs(append_transcript_line(transcript, f"{text}{note}"))
-
-
 # ---------------------------------------------------------------------------
-# Speechless-press handling
+# Stream handler: continuous streaming transcription
 # ---------------------------------------------------------------------------
 
 
-class SpeechAwarePauseHandler(ReplyOnPause):
-    """ReplyOnPause that also reports a press ending with no speech.
+class StreamingTranscriber(StreamHandler):
+    """Transcribe continuously while the user speaks.
 
-    A turn only fires after speech is detected, so a silent hold-and-release
-    would otherwise produce nothing. A per-connection no-input gap marks the
-    release and emits a no-speech line instead.
+    ``receive`` optionally enhances each incoming 16 kHz mono frame with a
+    per-connection Quail processor, appends it to the current utterance, and
+    tracks trailing silence. ``emit`` re-decodes the growing utterance on a
+    timer, emits the live transcript, and commits it after a run of silence or
+    once the utterance grows too long.
     """
 
-    def __init__(self, *args: Any, silence_gap_s: float = SILENCE_GAP_S, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._silence_gap_s = silence_gap_s
-        self._last_audio_time = 0.0
-        self._press_active = False
-        self._no_speech_sent = False
-        self._turn_fired = False
-        self._unavailable_notified = False
-        self._windows_at_press_start = 0
+    def __init__(self, asr: Transcriber | None = None) -> None:
+        super().__init__(
+            expected_layout="mono",
+            output_sample_rate=OUTPUT_SAMPLE_RATE,
+            input_sample_rate=AIC_SAMPLE_RATE,
+        )
+        self._asr = asr  # injected for tests; otherwise the shared backend is used
+        self._lock = threading.Lock()
+        self._utt = np.zeros(0, dtype=np.float32)  # current utterance (possibly enhanced)
+        self._utt_has_speech = False
+        self._committed = ""  # committed transcript across utterances
+        self._partial = ""  # live hypothesis for the current utterance
+        self._language: str | None = None
+        self._silence_s = 0.0
+        self._last_decode_len = 0
+        self._last_decode_t = 0.0
+        self._last_emit = ""
+        self._enhancer: QuailStream | None = None
+        self._enhance_error: str | None = None
+        self._decode_error: str | None = None
+        self._noted_errors: set[str] = set()
 
-    def set_args(self, args: list[Any]) -> None:
-        """Drop the WebRTC identity value so ``process`` keeps its signature.
-
-        The built-in Gradio audio UI passes the WebRTC component's value as the
-        first element of ``args``. For the "wave" variant that value is a plain
-        ``webrtc_id`` string, and FastRTC only recognises a ``WebRTCData``
-        object as its slot-0 placeholder, so the string would otherwise be
-        counted as an additional input and shift every argument (``process``
-        would receive the webrtc id where it expects ``mode``). Nor can we
-        re-wrap it as ``WebRTCData``: FastRTC then attaches the audio to
-        ``.audio`` and passes the model object itself. Dropping it lets FastRTC
-        insert its own dummy slot, restoring the documented
-        ``(audio, *additional_inputs)`` layout.
-        """
-        if args and isinstance(args[0], (str, WebRTCData)):
-            args = args[1:]
-        super().set_args(args)
+    def copy(self) -> StreamingTranscriber:
+        return StreamingTranscriber(asr=self._asr)
 
     def start_up(self) -> None:
-        super().start_up()
-        warmup = getattr(self.model, "warmup", None)
-        if callable(warmup):
-            warmup()
+        threading.Thread(target=warm_asr, daemon=True).start()
 
-    def copy(self) -> SpeechAwarePauseHandler:
-        return SpeechAwarePauseHandler(
-            fn=self.fn,
-            startup_fn=self.startup_fn,
-            algo_options=self.algo_options,
-            model_options=self.model_options,
-            can_interrupt=self.can_interrupt,
-            expected_layout=self.expected_layout,
-            output_sample_rate=self.output_sample_rate,
-            output_frame_size=self.output_frame_size,
-            input_sample_rate=self.input_sample_rate,
-            model=AICVadAdapter(),
-            needs_args=self.needs_args,
-            silence_gap_s=self._silence_gap_s,
+    # -- helpers ------------------------------------------------------------
+
+    def _mode(self) -> str:
+        """Read the enhancement mode from the FastRTC additional inputs."""
+        for arg in reversed(self.latest_args):
+            if isinstance(arg, str) and arg in MODE_CHOICES:
+                return arg
+        return MODE_ENHANCED
+
+    def _enhance(self, mono: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+        if self._mode() != MODE_ENHANCED:
+            return mono
+        if self._enhancer is None and self._enhance_error is None:
+            try:
+                self._enhancer = QuailStream()
+            except Exception as exc:
+                self._enhance_error = str(exc)
+                print(f"[quail] enhancement unavailable: {exc}")
+        if self._enhancer is None:
+            return mono
+        try:
+            return self._enhancer.process(mono)
+        except Exception as exc:
+            self._enhance_error = str(exc)
+            self._enhancer = None
+            print(f"[quail] enhancement failed mid-stream: {exc}")
+            return mono
+
+    def _full_text(self) -> str:
+        if self._partial:
+            return append_transcript_line(self._committed, self._partial)
+        return self._committed
+
+    def _note_error_once(self) -> str | None:
+        reason = (
+            self._decode_error
+            or self._enhance_error
+            or _asr_error.get("message")
         )
+        if reason is None or reason in self._noted_errors:
+            return None
+        self._noted_errors.add(reason)
+        return f"[unavailable: {reason}]"
 
-    def receive(self, frame: tuple[int, np.ndarray]) -> None:
-        now = time.monotonic()
-        if (now - self._last_audio_time) >= self._silence_gap_s:
-            # A new press begins: clear state from the previous one. Cleared here,
-            # not on turn completion, so a completed turn still suppresses the
-            # no-speech line until the user actually starts a new press.
-            self._no_speech_sent = False
-            self._turn_fired = False
-            self._unavailable_notified = False
-            self._windows_at_press_start = getattr(self.model, "windows", 0)
-        self._last_audio_time = now
-        self._press_active = True
-        super().receive(frame)
+    def _transcribe(
+        self, audio: npt.NDArray[np.float32], language: str | None
+    ) -> tuple[str, str | None]:
+        if self._asr is None:
+            message = _asr_error.get("message")
+            if message is not None:
+                raise RuntimeError(message)
+            self._asr = get_transcriber()
+        with _transcribe_lock:
+            return self._asr.transcribe(audio, language)
+
+    # -- StreamHandler interface -------------------------------------------
+
+    def receive(self, frame: tuple[int, npt.NDArray[np.int16]]) -> None:
+        sr, arr = to_mono_float32(frame)
+        if sr != AIC_SAMPLE_RATE:
+            arr = resample(arr, sr, AIC_SAMPLE_RATE)
+        enhanced = self._enhance(arr)
+        if enhanced.size == 0:
+            return
+        speech = rms(enhanced) >= SPEECH_RMS
+        with self._lock:
+            self._utt = np.concatenate([self._utt, enhanced])
+            if speech:
+                self._utt_has_speech = True
+            elif not self._utt_has_speech:
+                # Bound pre-speech silence to a short pre-roll for ASR context.
+                keep = int(PRE_ROLL_S * AIC_SAMPLE_RATE)
+                if len(self._utt) > keep:
+                    self._utt = self._utt[-keep:]
+                    self._last_decode_len = min(self._last_decode_len, len(self._utt))
+            # Bound the utterance even before the ASR is ready, so a slow model
+            # load cannot grow the buffer without limit.
+            cap = int(MAX_UTTERANCE_S * AIC_SAMPLE_RATE)
+            if len(self._utt) > cap:
+                self._utt = self._utt[-cap:]
+                self._last_decode_len = min(self._last_decode_len, len(self._utt))
+            self._silence_s = 0.0 if speech else self._silence_s + len(enhanced) / AIC_SAMPLE_RATE
 
     def emit(self) -> EmitType:
-        out = super().emit()
-        if out is not None:
-            self._turn_fired = True
-            return out
-        if not (
-            self._press_active
-            and not self._turn_fired
-            and not self._no_speech_sent
-            and not self.state.started_talking
-            and not self.state.responding
-            and self.generator is None
-            and (time.monotonic() - self._last_audio_time) >= self._silence_gap_s
-        ):
+        if self._asr is None and not _asr_ready.is_set():
+            time.sleep(EMIT_IDLE_SLEEP_S)
             return None
-        self._no_speech_sent = True
-        self._press_active = False
-        transcript = self.latest_args[-1] if self.latest_args else ""
-        if not isinstance(transcript, str):
-            transcript = ""
-        reason = getattr(self.model, "unavailable", None)
-        if reason is not None:
-            if self._unavailable_notified:
+
+        now = time.monotonic()
+        with self._lock:
+            utt = self._utt
+            new_audio = len(utt) - self._last_decode_len
+            too_long = len(utt) >= int(MAX_UTTERANCE_S * AIC_SAMPLE_RATE)
+            commit = self._silence_s >= COMMIT_SILENCE_S and self._utt_has_speech
+            due = (
+                self._utt_has_speech
+                and new_audio >= int(MIN_DECODE_AUDIO_S * AIC_SAMPLE_RATE)
+                and (now - self._last_decode_t) >= DECODE_INTERVAL_S
+            )
+            if not (commit or due or (too_long and self._utt_has_speech)):
+                snapshot: tuple[npt.NDArray[np.float32], str | None, bool] | None = None
+            else:
+                should_commit = commit or too_long
+                # A partial only needs recent audio; the commit decode covers the
+                # whole utterance so no words are lost.
+                window = (
+                    utt
+                    if should_commit
+                    else utt[-int(PARTIAL_WINDOW_S * AIC_SAMPLE_RATE) :]
+                )
+                snapshot = (window.copy(), self._language, should_commit)
+
+        if snapshot is None:
+            time.sleep(EMIT_IDLE_SLEEP_S)
+            return None
+
+        audio, language, should_commit = snapshot
+        failed = False
+        try:
+            text, detected = self._transcribe(audio, language)
+        except Exception as exc:
+            # A decode failure must not disturb the transcript: keep the live
+            # partial and the buffered utterance, and surface the error once.
+            print(f"[asr] transcription failed: {exc}")
+            self._decode_error = str(exc)
+            failed = True
+            text, detected = "", language
+
+        now = time.monotonic()
+        with self._lock:
+            # Throttle retries after a failure too.
+            self._last_decode_t = now
+            if not failed:
+                if should_commit:
+                    if text:
+                        self._committed = append_transcript_line(self._committed, text)
+                    tail = self._utt[len(audio) :]
+                    self._utt = tail.copy()
+                    self._last_decode_len = 0
+                    self._partial = ""
+                    self._language = None
+                    self._silence_s = 0.0
+                    self._utt_has_speech = tail.size > 0 and rms(tail) >= SPEECH_RMS
+                else:
+                    self._partial = text
+                    self._last_decode_len = len(self._utt)
+                    if language is None and detected:
+                        self._language = detected
+            note = self._note_error_once()
+            full = self._full_text()
+            if note:
+                full = append_transcript_line(full, note)
+            if full == self._last_emit:
                 return None
-            self._unavailable_notified = True
-            line = f"[turn detection unavailable: {reason}]"
-        elif getattr(self.model, "windows", 0) <= self._windows_at_press_start:
-            # Too short for the detector to have evaluated a window: stay silent.
-            return None
-        else:
-            line = NO_SPEECH_LINE
-        return AdditionalOutputs(append_transcript_line(transcript, line))
+            self._last_emit = full
+            return AdditionalOutputs(full)
 
 
 # ---------------------------------------------------------------------------
@@ -500,25 +557,25 @@ def _replace_transcript(_current: str, new_transcript: str) -> str:
 
 
 mode_radio = gr.Radio(
-    ["enhanced", "raw"],
-    value="enhanced",
+    list(MODE_CHOICES),
+    value=MODE_ENHANCED,
     label="Quail speech enhancement",
     info="enhanced: clean the mic audio with ai-coustics Quail before transcription.",
 )
 transcript = gr.Textbox(
     label="Transcript",
-    placeholder="Press and hold the mic button, speak, then release.",
+    placeholder="Tap the mic and start speaking — text appears as you talk.",
     interactive=False,
     lines=14,
     max_lines=14,
     elem_classes=["transcript-box"],
 )
 
-# The handler owns turn detection and config; the UI is built by hand below, so
-# no additional components are attached to this Stream (its generated layout is
+# The handler owns streaming and config; the UI is built by hand below, so no
+# additional components are attached to this Stream (its generated layout is
 # discarded in favor of `build_ui`).
 stream = Stream(
-    SpeechAwarePauseHandler(process, model=AICVadAdapter()),
+    StreamingTranscriber(),
     modality="audio",
     mode="send-receive",
     rtc_configuration=rtc_configuration,
@@ -629,8 +686,8 @@ def build_ui() -> gr.Blocks:
         gr.HTML(
             "<div class='purr-header'>"
             "<h1>PURR</h1>"
-            "<p>Real-time speech-to-text &middot; ai-coustics Quail enhancement "
-            "&middot; Whisper via HF Inference Providers</p>"
+            "<p>Streaming speech-to-text &middot; ai-coustics Quail enhancement "
+            "&middot; local Whisper/Moonshine</p>"
             "</div>"
         )
         transcript.render()
@@ -650,7 +707,7 @@ def build_ui() -> gr.Blocks:
 
         webrtc.stream(
             fn=stream.event_handler,
-            inputs=[webrtc, mode_radio, transcript],
+            inputs=[webrtc, mode_radio],
             outputs=[webrtc],
             time_limit=stream.time_limit,
             concurrency_limit=stream.concurrency_limit,

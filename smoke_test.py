@@ -101,6 +101,17 @@ assert dur2 == 0.0, dur2
 print("vad happy path OK", round(dur, 3))
 """)
 
+run("wave-variant WebRTC value keeps process arg order", """
+import app
+from fastrtc import WebRTCData
+h = app.stream.event_handler.copy()
+h.set_args(["webrtc-id", "enhanced", "prev"])
+assert len(h.latest_args) == 3, h.latest_args
+assert isinstance(h.latest_args[0], WebRTCData), type(h.latest_args[0])
+assert h.latest_args[1:] == ["enhanced", "prev"], h.latest_args[1:]
+print("arg layout OK")
+""")
+
 run("speechless press and turn handling (stub detector)", r"""
 import time
 import numpy as np

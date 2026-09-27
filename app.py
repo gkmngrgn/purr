@@ -35,7 +35,7 @@ import gradio as gr
 from gradio.utils import get_space
 
 import librosa
-from fastrtc import AdditionalOutputs, ReplyOnPause, Stream
+from fastrtc import AdditionalOutputs, ReplyOnPause, Stream, WebRTCData
 
 if TYPE_CHECKING:
     import aic_sdk as aic
@@ -355,6 +355,20 @@ class SpeechAwarePauseHandler(ReplyOnPause):
         self._turn_fired = False
         self._unavailable_notified = False
         self._windows_at_press_start = 0
+
+    def set_args(self, args: list[Any]) -> None:
+        """Keep ``process``'s ``(audio, mode, transcript)`` signature intact.
+
+        The built-in Gradio audio UI uses the "wave" variant, whose WebRTC
+        component preprocesses to a plain ``webrtc_id`` string. FastRTC then
+        treats that string as an additional input instead of the slot-0
+        placeholder, shifting every argument (``process`` would receive the
+        webrtc id where it expects ``mode``). Re-wrapping it as ``WebRTCData``
+        restores the documented ``(audio, *additional_inputs)`` layout.
+        """
+        if args and isinstance(args[0], str):
+            args = [WebRTCData(webrtc_id=args[0]), *args[1:]]
+        super().set_args(args)
 
     def start_up(self) -> None:
         super().start_up()

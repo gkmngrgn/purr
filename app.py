@@ -573,23 +573,6 @@ APP_CSS = """
 .settings-panel {
     justify-content: flex-end;
 }
-/* Keep the mic's audio-reactive pulse as a subtle full-page background. */
-.mic-panel .gradio-webrtc-icon-wrapper {
-    position: fixed !important;
-    inset: 0 !important;
-    width: 100vw !important;
-    height: 100vh !important;
-    max-height: none !important;
-    opacity: 0.15 !important;
-    pointer-events: none !important;
-    z-index: 0 !important;
-}
-.purr-header,
-.transcript-box,
-.controls {
-    position: relative;
-    z-index: 1;
-}
 """
 
 

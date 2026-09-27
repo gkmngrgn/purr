@@ -26,7 +26,7 @@ The user-facing choice between *enhanced* (run Quail enhancement before transcri
 The accumulated text output: the committed lines from finished utterances followed by the live partial. Enhancement is observed through the transcript rather than through audio playback, which is intentionally absent to avoid feedback.
 
 ### Local ASR
-The speech-to-text stage. It runs on the Space's CPU (faster-whisper by default, Moonshine optional) rather than through a hosted provider, so there is no per-request network latency, token, or cost. Backend and checkpoint are selected by `PURR_ASR_ENGINE` / `PURR_ASR_MODEL`.
+The speech-to-text stage. It runs in-process on the Space's CPU rather than through a hosted provider, so there is no per-request network latency, token, or cost. The recognition engine and checkpoint are configurable.
 
 ## Space deployment
 

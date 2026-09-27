@@ -598,7 +598,7 @@ def build_ui() -> gr.Blocks:
             "<div class='purr-header'>"
             "<h1>PURR</h1>"
             "<p>Real-time speech-to-text &middot; ai-coustics Quail enhancement "
-            "&middot; Whisper via HF Inference Providers</p>"
+            "&middot; Whisper (local, faster-whisper)</p>"
             "</div>"
         )
         transcript.render()

@@ -41,7 +41,6 @@ Transcription runs locally, so no Inference Providers token is required. Cloudfl
 ```bash
 uv venv --python 3.12 && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 uv pip install -r requirements.txt
-export HF_TOKEN=hf_...            # Windows: $env:HF_TOKEN = "hf_..."
 export AIC_SDK_LICENSE=...        # Windows: $env:AIC_SDK_LICENSE = "..."
 python app.py
 ```
@@ -52,7 +51,7 @@ After changing dependencies in `pyproject.toml`, regenerate the lock:
 uv pip compile pyproject.toml --python-version 3.12 --universal --output-file requirements.txt
 ```
 
-Open http://localhost:7860. WebRTC in a browser works without a token (TURN credentials are only fetched on Spaces).
+Open http://localhost:7860. No token is needed: transcription runs locally, and TURN credentials are only fetched on Spaces (via `CLOUDFLARE_TURN_KEY_ID` / `CLOUDFLARE_TURN_KEY_API_TOKEN`).
 
 ## How it works
 
@@ -76,4 +75,4 @@ This project's own code is released under the [MIT License](LICENSE).
 Third-party components keep their own terms and are **not** covered by this license:
 
 - **ai-coustics Quail** (`quail-ms-l-16khz`) — model and `AIC_SDK_LICENSE` are governed by ai-coustics (https://developers.ai-coustics.com).
-- **Whisper** (`openai/whisper-large-v3`) — model weights under OpenAI's terms; used via HF Inference Providers.
+- **Whisper** (`whisper-large-v3-turbo`) — model weights under OpenAI's terms; run locally via [faster-whisper](https://github.com/SYSTRAN/faster-whisper).

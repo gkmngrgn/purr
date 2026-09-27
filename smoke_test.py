@@ -100,6 +100,25 @@ assert out == "hello world", repr(out)
 print("transcribe join OK")
 """)
 
+run("load_whisper returns the cached model without reloading", """
+import app
+sentinel = object()
+app._whisper["model"] = sentinel
+assert app.load_whisper() is sentinel, "cache hit must return the stored model"
+del app._whisper["model"]
+print("whisper cache OK")
+""")
+
+run("faster-whisper import and model alias resolve", """
+import app
+import ctranslate2
+from faster_whisper import WhisperModel  # noqa: F401
+from faster_whisper.utils import available_models
+
+assert app.WHISPER_MODEL in available_models(), app.WHISPER_MODEL
+print("faster-whisper alias OK:", app.WHISPER_MODEL)
+""")
+
 run("aic VAD adapter computes speech-seconds (fake aic_sdk)", r"""
 import os, sys, types
 import numpy as np

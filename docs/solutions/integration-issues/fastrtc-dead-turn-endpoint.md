@@ -83,12 +83,12 @@ Space secrets `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN` were 
 
 - Never return `None` from `rtc_configuration()`; always supply at least public STUN.
 - Treat FastRTC's `hf_token` default as unusable on this version: always pass `hf_token=""` and configure `CLOUDFLARE_TURN_KEY_ID` / `CLOUDFLARE_TURN_KEY_API_TOKEN` for relay.
-- Do not send `HF_TOKEN` to third-party TURN endpoints; scope it to Inference Providers only.
+- Do not send `HF_TOKEN` to third-party TURN endpoints. The app no longer needs `HF_TOKEN` at all — transcription runs locally — so keep the token out of the relay path entirely.
 - When a Space shows "connecting"/"connection failed", check the logs for `[turn]` lines and name-resolution errors before assuming the app code is at fault.
 
 ## Related Issues
 
 - Upstream: gradio-app/fastrtc#429 — dead `turn.fastrtc.org`, open and unanswered since 2026-06-04.
 - `docs/solutions/integration-issues/fastrtc-custom-vad-pause-detector.md` — the adjacent FastRTC configuration seam (turn detection) on the same `app.py`.
-- `docs/solutions/integration-issues/huggingface-spaces-zerogpu-deployment-failure.md` — other Space deployment layers; its "HF_TOKEN also used for TURN" caveat is now superseded by this learning.
+- `docs/solutions/integration-issues/huggingface-spaces-zerogpu-deployment-failure.md` — other Space deployment layers; no longer claims `HF_TOKEN` is needed for TURN (that caveat was removed when transcription moved local).
 - Repo vocabulary: `CONCEPTS.md`; environment template: `.env.sample`.

@@ -1,21 +1,21 @@
 """Purr: real-time speech-to-text on the HF Stack.
 
 Pipeline:  mic -> FastRTC (WebRTC) -> Quail enhancement (optional) -> Whisper
-(local, faster-whisper) -> transcript.
+via Inference Providers -> transcript.
 
-Deploys as a Gradio Space. Requires one secret:
+Deploys as a Gradio Space. Requires two secrets:
+    HF_TOKEN          token with "Make calls to Inference Providers" permission
     AIC_SDK_LICENSE   ai-coustics SDK license key (https://developers.ai-coustics.com)
-
-Whisper runs locally on CPU via faster-whisper, so no Inference Providers token
-or hosted credits are needed.
 """
 
 from __future__ import annotations
 
+import io
 import os
 import threading
 import time
 import warnings
+import wave
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -40,9 +40,9 @@ from fastrtc import AdditionalOutputs, ReplyOnPause, Stream, WebRTC, WebRTCData
 
 if TYPE_CHECKING:
     import aic_sdk as aic
-    from faster_whisper import WhisperModel
     from fastrtc.tracks import EmitType
     from fastrtc.utils import AudioChunk
+    from huggingface_hub import InferenceClient
 
 # Gradio 5.50 warns that `gr.Blocks(css=...)` will move to `Blocks.launch(css=...)`
 # in Gradio 6, but Gradio 6 is unreachable while fastrtc caps `gradio<6`, and the
@@ -62,12 +62,15 @@ QUAIL_MODEL_ID = "quail-ms-l-16khz"  # Quail Multi-Speaker: tuned for STT accura
 MODELS_DIR = "models"
 AIC_SAMPLE_RATE = 16000  # Quail native sample rate
 OUTPUT_SAMPLE_RATE = 24000  # FastRTC output sample rate (multiple of 50)
-WHISPER_MODEL = "large-v3-turbo"  # faster-whisper checkpoint (multilingual)
+WHISPER_MODEL = "openai/whisper-large-v3"
 VAD_MODEL_ID = "vad-2.1-xxs-16khz"  # ai-coustics dedicated VAD model
 VAD_SPEECH_THRESHOLD = 0.5  # raw per-block probability treated as speech
 SILENCE_GAP_S = 1.5  # no-input gap that marks the end of a silent press
 NO_SPEECH_LINE = "[no speech detected]"
 NO_WORDS_LINE = "[speech detected, but no words recognized]"
+TEST_AUDIO_URL = (
+    "https://storage.googleapis.com/media-session/sintel/snow-fight.mp3"
+)
 
 
 def is_space() -> bool:
@@ -83,26 +86,18 @@ def is_space() -> bool:
 
 _init_lock = threading.Lock()
 _proc_lock = threading.Lock()
-_whisper_lock = threading.Lock()
 _quail: dict[str, Any] = {}
-_whisper: dict[str, Any] = {}
+_client_cache: list[InferenceClient] = []
 
 
-def load_whisper() -> WhisperModel:
-    """Download (once) and load the local Whisper model.
+def get_hf_client() -> InferenceClient:
+    if not _client_cache:
+        with _init_lock:
+            if not _client_cache:
+                from huggingface_hub import InferenceClient
 
-    faster-whisper's int8 CPU build keeps Whisper usable without a GPU or
-    hosted inference credits. The turbo checkpoint preserves large-v3's
-    multilingual coverage at roughly half the size.
-    """
-    with _whisper_lock:
-        if "model" in _whisper:
-            return _whisper["model"]
-        from faster_whisper import WhisperModel
-
-        model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-        _whisper["model"] = model
-        return model
+                _client_cache.append(InferenceClient(provider="auto"))
+    return _client_cache[0]
 
 
 def _load_aic_model(model_id: str) -> aic.Model:
@@ -276,17 +271,24 @@ def to_int16(y: np.ndarray) -> np.ndarray:
     return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
 
 
+def wav_bytes(y16: np.ndarray) -> bytes:
+    """Encode 16 kHz mono int16 samples as RIFF/WAV bytes (no ffmpeg needed)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(AIC_SAMPLE_RATE)
+        w.writeframes(np.ascontiguousarray(y16, dtype=np.int16).tobytes())
+    return buf.getvalue()
+
+
 def transcribe_16k(y16: np.ndarray) -> str:
-    """Transcribe a 16 kHz mono float32 buffer with the local Whisper model."""
-    segments, _info = load_whisper().transcribe(
-        y16,
-        language=None,
-        beam_size=1,
-        vad_filter=False,
-        condition_on_previous_text=False,
-        without_timestamps=True,
+    """Transcribe a 16 kHz mono float32 buffer with Whisper via Inference Providers."""
+    client = get_hf_client()
+    result = client.automatic_speech_recognition(
+        audio=wav_bytes(to_int16(y16)), model=WHISPER_MODEL
     )
-    return "".join(segment.text for segment in segments).strip()
+    return (result.text or "").strip()
 
 
 def playback_chunks(y16: np.ndarray, chunk_s: float = 0.3) -> Iterator[tuple[int, np.ndarray]]:
@@ -598,7 +600,7 @@ def build_ui() -> gr.Blocks:
             "<div class='purr-header'>"
             "<h1>PURR</h1>"
             "<p>Real-time speech-to-text &middot; ai-coustics Quail enhancement "
-            "&middot; Whisper (local, faster-whisper)</p>"
+            "&middot; Whisper via HF Inference Providers</p>"
             "</div>"
         )
         transcript.render()

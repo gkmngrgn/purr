@@ -28,9 +28,7 @@ audioop-lts==0.2.2 ; python_full_version >= '3.13'
     #   standard-aifc
     #   standard-sunau
 av==17.1.0
-    # via
-    #   aiortc
-    #   faster-whisper
+    # via aiortc
 brotli==1.2.0
     # via gradio
 certifi==2026.7.22
@@ -59,24 +57,18 @@ cryptography==50.0.1
     # via
     #   aiortc
     #   pyopenssl
-ctranslate2==4.8.2
-    # via faster-whisper
 decorator==5.3.1
     # via librosa
 dnspython==2.8.0
     # via aioice
 fastapi==0.141.1
     # via gradio
-faster-whisper==1.2.1
-    # via purr (pyproject.toml)
 fastrtc==0.0.34
     # via purr (pyproject.toml)
 ffmpy==1.0.0
     # via gradio
 filelock==4.0.3
     # via huggingface-hub
-flatbuffers==25.12.19
-    # via onnxruntime
 fsspec==2026.9.0
     # via
     #   gradio-client
@@ -108,10 +100,8 @@ httpx==0.28.1
 huggingface-hub==1.33.0
     # via
     #   purr (pyproject.toml)
-    #   faster-whisper
     #   gradio
     #   gradio-client
-    #   tokenizers
 idna==3.20
     # via
     #   anyio
@@ -153,19 +143,15 @@ numpy==2.5.3
     # via
     #   purr (pyproject.toml)
     #   aic-sdk
-    #   ctranslate2
     #   fastrtc
     #   gradio
     #   librosa
     #   numba
-    #   onnxruntime
     #   pandas
     #   scikit-learn
     #   scipy
     #   soundfile
     #   soxr
-onnxruntime==1.30.0
-    # via faster-whisper
 orjson==3.12.0
     # via gradio
 packaging==26.3
@@ -174,7 +160,6 @@ packaging==26.3
     #   gradio-client
     #   huggingface-hub
     #   lazy-loader
-    #   onnxruntime
     #   pooch
 pandas==2.3.3
     # via gradio
@@ -184,8 +169,6 @@ platformdirs==4.11.15
     # via pooch
 pooch==1.9.0
     # via librosa
-protobuf==7.36.2
-    # via onnxruntime
 pycparser==3.0 ; implementation_name != 'PyPy'
     # via cffi
 pydantic==2.12.3
@@ -214,7 +197,6 @@ pytz==2026.4
     # via pandas
 pyyaml==6.0.3
     # via
-    #   ctranslate2
     #   gradio
     #   huggingface-hub
 requests==2.34.2
@@ -254,14 +236,10 @@ starlette==0.52.1
     #   gradio
 threadpoolctl==3.7.0
     # via scikit-learn
-tokenizers==0.23.2
-    # via faster-whisper
 tomlkit==0.13.3
     # via gradio
 tqdm==4.70.1
-    # via
-    #   faster-whisper
-    #   huggingface-hub
+    # via huggingface-hub
 typer==0.27.2
     # via gradio
 typing-extensions==4.16.0

@@ -26,7 +26,7 @@ The accumulated text output, appended to across utterances. It distinguishes rec
 A press-and-release during which the turn detector confirms no speech. It is reported as a distinct no-speech line rather than a transcription failure, and it is separate from an utterance that produced no recognized words.
 
 ### Whisper transcription
-The speech-to-text stage. It runs the Whisper `large-v3-turbo` checkpoint locally on CPU through faster-whisper (int8), so no hosted inference provider or token is involved; the model downloads once and is cached on the Space.
+The speech-to-text stage. It sends the (possibly enhanced) utterance to Whisper through Hugging Face Inference Providers rather than running a model locally.
 
 ## Space deployment
 

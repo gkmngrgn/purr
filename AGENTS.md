@@ -2,7 +2,7 @@
 
 ## What this is
 Single-file Hugging Face Gradio Space for real-time speech-to-text (`app.py`).
-Pipeline: mic -> FastRTC `ReplyOnPause` (WebRTC) -> optional Quail enhancement (aic-sdk, CPU) -> local Whisper (faster-whisper, CPU) -> transcript. `README.md` is the Space card and deployment notes.
+Pipeline: mic -> FastRTC `ReplyOnPause` (WebRTC) -> optional Quail enhancement (aic-sdk, CPU) -> Whisper via HF Inference Providers -> transcript. `README.md` is the Space card and deployment notes.
 Documented solutions live in `docs/solutions/` (organized by category with YAML frontmatter: `module`, `tags`, `problem_type`); shared domain vocabulary is in `CONCEPTS.md`. Relevant when implementing or debugging in documented areas.
 
 ## Deploy
@@ -21,8 +21,8 @@ Documented solutions live in `docs/solutions/` (organized by category with YAML 
 - Two hooks run on every commit (`.pre-commit-config.yaml`): `ruff` enforces the `ANN` annotation rules (`select = ["ANN"]` in `[tool.ruff.lint]`), and `ty` checks the types. Run `uvx pre-commit install` once to enable them, or `uvx pre-commit run --all-files` to check everything on demand.
 
 ## Environment / secrets
-- `AIC_SDK_LICENSE` (Quail) is read from the environment at call time. `HF_TOKEN` is no longer used: transcription runs locally, and the optional Spaces TURN relay reads `CLOUDFLARE_TURN_KEY_ID` / `CLOUDFLARE_TURN_KEY_API_TOKEN`.
-- Importing `app` and constructing the UI must succeed with no secret set (the smoke test asserts this). Quail and transcription only fail when actually invoked.
+- `HF_TOKEN` (Inference Providers, and TURN on Spaces) and `AIC_SDK_LICENSE` (Quail) are read from the environment at call time.
+- Importing `app` and constructing the UI must succeed with neither secret set (the smoke test asserts this). Quail and transcription only fail when actually invoked.
 
 ## Invariants that are easy to break
 - The `gradio` pin in `pyproject.toml` must equal `sdk_version` in `README.md` (currently `5.50.0`). The Gradio Space build injects `gradio[oauth,mcp]==<sdk_version>`, and `fastrtc==0.0.34` caps `gradio<6`; bumping `sdk_version` to Gradio 6 makes `pip` fail with `ResolutionImpossible`.
@@ -32,6 +32,5 @@ Documented solutions live in `docs/solutions/` (organized by category with YAML 
 - FastRTC calls the outputs handler as `handler(current_component_value, *AdditionalOutputs.args)`; the first argument is the current transcript value, not the WebRTC id.
 - `AIC_SAMPLE_RATE` must stay 16000 (Quail native). Playback uses `OUTPUT_SAMPLE_RATE = 24000`, which must match `ReplyOnPause`'s default `output_sample_rate`.
 - Audio yielded for playback is `(24000, int16 ndarray of shape (1, N))`.
-- Transcription runs locally on CPU via `faster-whisper` (`WHISPER_MODEL = "large-v3-turbo"`, int8). The model loads lazily through the `_whisper` singleton so importing `app` stays light. Do not move it to ZeroGPU: FastRTC's audio thread has no Gradio request context, so a `@spaces.GPU` call there would be metered as anonymous.
 - The Quail `Processor` is a process-wide singleton guarded by `_proc_lock`; every utterance is serialized through it. Do not process concurrently without that lock.
 - `is_space()` (driven by `SYSTEM=spaces`) gates `concurrency_limit`, `time_limit`, and TURN credential lookup; local runs intentionally get no TURN and unlimited concurrency.

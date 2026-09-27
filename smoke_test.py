@@ -23,7 +23,6 @@ handler = app.stream.event_handler
 assert isinstance(handler, app.SpeechAwarePauseHandler), type(handler).__name__
 assert isinstance(handler.model, app.AICVadAdapter), type(handler.model).__name__
 assert not app._vad_model, "VAD model must not be built at import"
-assert app._whisper == {}, "Whisper must not be loaded at import"
 assert app.NO_SPEECH_LINE != app.NO_WORDS_LINE
 c = handler.copy()
 assert isinstance(c, app.SpeechAwarePauseHandler)
@@ -80,43 +79,6 @@ text = outs[-1].args[0]
 assert text == "prev\n" + app.NO_WORDS_LINE, text
 assert app.NO_SPEECH_LINE not in text
 print("no-words label OK")
-""")
-
-run("transcribe_16k joins local-model segments", r"""
-import numpy as np
-import app
-
-class _Seg:
-    def __init__(self, text): self.text = text
-
-class _FakeModel:
-    def transcribe(self, y16, **kwargs):
-        assert kwargs.get("vad_filter") is False, kwargs
-        return iter([_Seg(" hello"), _Seg(" world ")]), None
-
-app.load_whisper = lambda: _FakeModel()
-out = app.transcribe_16k(np.zeros(16000, dtype=np.float32))
-assert out == "hello world", repr(out)
-print("transcribe join OK")
-""")
-
-run("load_whisper returns the cached model without reloading", """
-import app
-sentinel = object()
-app._whisper["model"] = sentinel
-assert app.load_whisper() is sentinel, "cache hit must return the stored model"
-del app._whisper["model"]
-print("whisper cache OK")
-""")
-
-run("faster-whisper import and model alias resolve", """
-import app
-import ctranslate2
-from faster_whisper import WhisperModel  # noqa: F401
-from faster_whisper.utils import available_models
-
-assert app.WHISPER_MODEL in available_models(), app.WHISPER_MODEL
-print("faster-whisper alias OK:", app.WHISPER_MODEL)
 """)
 
 run("aic VAD adapter computes speech-seconds (fake aic_sdk)", r"""
@@ -238,6 +200,16 @@ assert i16.dtype == np.int16 and i16.max() <= 32767
 frames = list(app.playback_chunks(mono, chunk_s=0.1))
 assert frames and frames[0][0] == 24000 and frames[0][1].ndim == 2
 print("audio helpers OK", len(frames), "frames")
+""")
+
+run("WAV bytes via own encoder on int16 mono", """
+import numpy as np
+import app
+y = app.to_int16(np.random.uniform(-0.3, 0.3, 16000))
+b = app.wav_bytes(y)
+assert b.startswith(b'RIFF') and b'fmt ' in b and b'data' in b
+assert len(b) == 44 + len(y) * 2
+print("wav bytes OK", len(b))
 """)
 
 run("turn creds helper graceful without token", """

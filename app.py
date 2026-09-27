@@ -513,7 +513,6 @@ stream = Stream(
     rtc_configuration=rtc_configuration,
     concurrency_limit=5 if is_space() else None,
     time_limit=90 if is_space() else None,
-    ui_args={"hide_title": True},
 )
 
 # ---------------------------------------------------------------------------
@@ -602,7 +601,7 @@ def build_ui() -> gr.Blocks:
             _replace_transcript,
             inputs=[transcript],
             outputs=[transcript],
-            concurrency_limit=5 if is_space() else None,
+            concurrency_limit=stream.concurrency_limit_gradio,
         )
 
         # ZeroGPU startup probe (Space-only). Free-tier Gradio Spaces run on

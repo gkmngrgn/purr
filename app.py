@@ -14,6 +14,7 @@ import io
 import os
 import threading
 import time
+import warnings
 import wave
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,16 @@ if TYPE_CHECKING:
     from fastrtc.tracks import EmitType
     from fastrtc.utils import AudioChunk
     from huggingface_hub import InferenceClient
+
+# Gradio 5.50 warns that `gr.Blocks(css=...)` will move to `Blocks.launch(css=...)`
+# in Gradio 6, but Gradio 6 is unreachable while fastrtc caps `gradio<6`, and the
+# replacement does not exist yet. Silence the known-benign warning for our Blocks
+# and for FastRTC's discarded default UI, which also passes `css`.
+warnings.filterwarnings(
+    "ignore",
+    message=r"The 'css' parameter in the Blocks constructor will be removed",
+    category=DeprecationWarning,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -584,12 +595,7 @@ APP_CSS = """
 
 def build_ui() -> gr.Blocks:
     """Assemble the app UI: transcript on top, controls pinned below."""
-    with gr.Blocks(title="PURR") as demo:
-        # Gradio 5.50 deprecates the `css=` Blocks kwarg, but does not yet
-        # support its replacement, `Blocks.launch(css=...)` (added in Gradio 6).
-        # Inject the stylesheet through a component instead: no warning, and it
-        # keeps working when the Gradio pin eventually moves to 6.
-        gr.HTML(f"<style>{APP_CSS}</style>")
+    with gr.Blocks(css=APP_CSS, title="PURR") as demo:
         gr.HTML(
             "<div class='purr-header'>"
             "<h1>PURR</h1>"

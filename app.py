@@ -357,17 +357,21 @@ class SpeechAwarePauseHandler(ReplyOnPause):
         self._windows_at_press_start = 0
 
     def set_args(self, args: list[Any]) -> None:
-        """Keep ``process``'s ``(audio, mode, transcript)`` signature intact.
+        """Drop the WebRTC identity value so ``process`` keeps its signature.
 
-        The built-in Gradio audio UI uses the "wave" variant, whose WebRTC
-        component preprocesses to a plain ``webrtc_id`` string. FastRTC then
-        treats that string as an additional input instead of the slot-0
-        placeholder, shifting every argument (``process`` would receive the
-        webrtc id where it expects ``mode``). Re-wrapping it as ``WebRTCData``
-        restores the documented ``(audio, *additional_inputs)`` layout.
+        The built-in Gradio audio UI passes the WebRTC component's value as the
+        first element of ``args``. For the "wave" variant that value is a plain
+        ``webrtc_id`` string, and FastRTC only recognises a ``WebRTCData``
+        object as its slot-0 placeholder, so the string would otherwise be
+        counted as an additional input and shift every argument (``process``
+        would receive the webrtc id where it expects ``mode``). Nor can we
+        re-wrap it as ``WebRTCData``: FastRTC then attaches the audio to
+        ``.audio`` and passes the model object itself. Dropping it lets FastRTC
+        insert its own dummy slot, restoring the documented
+        ``(audio, *additional_inputs)`` layout.
         """
-        if args and isinstance(args[0], str):
-            args = [WebRTCData(webrtc_id=args[0]), *args[1:]]
+        if args and isinstance(args[0], (str, WebRTCData)):
+            args = args[1:]
         super().set_args(args)
 
     def start_up(self) -> None:

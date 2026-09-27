@@ -562,12 +562,34 @@ APP_CSS = """
 .settings-panel {
     justify-content: flex-end;
 }
+/* Keep the mic's audio-reactive pulse as a subtle full-page background. */
+.mic-panel .gradio-webrtc-icon-wrapper {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-height: none !important;
+    opacity: 0.15 !important;
+    pointer-events: none !important;
+    z-index: 0 !important;
+}
+.purr-header,
+.transcript-box,
+.controls {
+    position: relative;
+    z-index: 1;
+}
 """
 
 
 def build_ui() -> gr.Blocks:
     """Assemble the app UI: transcript on top, controls pinned below."""
-    with gr.Blocks(css=APP_CSS, title="PURR") as demo:
+    with gr.Blocks(title="PURR") as demo:
+        # Gradio 5.50 deprecates the `css=` Blocks kwarg, but does not yet
+        # support its replacement, `Blocks.launch(css=...)` (added in Gradio 6).
+        # Inject the stylesheet through a component instead: no warning, and it
+        # keeps working when the Gradio pin eventually moves to 6.
+        gr.HTML(f"<style>{APP_CSS}</style>")
         gr.HTML(
             "<div class='purr-header'>"
             "<h1>PURR</h1>"

@@ -586,13 +586,13 @@ stream = Stream(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-# FastRTC's generated layout puts inputs in a left sidebar and the transcript in
-# a right sidebar, which buries the primary output. Build the Gradio Blocks by
-# hand instead: the transcript is the centered focus, and the mic control, the
-# enhancement setting, and the audio indicator sit together below it.
+# FastRTC's generated layout buries the primary output between two sidebars.
+# Build the Gradio Blocks by hand instead: a full-height transcript pane owns the
+# page, with the record control, the microphone-source picker, and the
+# enhancement setting grouped in a rail beside it.
 APP_CSS = """
-.gradio-container { max-width: 980px !important; margin: 0 auto !important; }
-.purr-header { text-align: center; margin: 0.25rem 0 1.25rem; }
+.gradio-container { max-width: 1200px !important; margin: 0 auto !important; }
+.purr-header { text-align: center; margin: 0.25rem 0 1rem; }
 .purr-header h1 {
     margin: 0;
     font-size: 3.25rem;
@@ -605,11 +605,43 @@ APP_CSS = """
     font-size: 1.05rem;
     color: var(--body-text-color-subdued);
 }
+/* Two-region shell: the transcript pane owns the space, the rail holds controls. */
+.purr-layout {
+    gap: 1.25rem;
+    align-items: stretch;
+}
+.transcript-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.control-rail {
+    justify-content: flex-start;
+    gap: 0.75rem;
+    padding-left: 1.25rem;
+    border-left: 1px solid var(--border-color-primary);
+}
+/* The transcript fills the pane; the textarea scrolls internally, the page does not. */
 .transcript-box {
-    min-height: 46vh;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.transcript-box label,
+.transcript-box .input-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.transcript-box .input-container {
+    align-items: stretch;
 }
 .transcript-box textarea {
-    min-height: 42vh !important;
+    flex: 1 1 auto;
+    height: 100% !important;
+    min-height: 0 !important;
     font-size: 1.6rem !important;
     line-height: 1.55 !important;
     font-weight: 500 !important;
@@ -617,18 +649,23 @@ APP_CSS = """
     -webkit-text-fill-color: var(--body-text-color) !important;
     opacity: 1 !important;
 }
-.controls {
-    align-items: end;
-    gap: 1rem;
-    padding-top: 1rem;
-    margin-top: 0.5rem;
-    border-top: 1px solid var(--border-color-primary);
+/* Microphone-source picker: a distinct control, not an arrow inside the record button.
+   FastRTC renders it inside the WebRTC component, so it is reached by scoping CSS to
+   the component's own classes (pinned to fastrtc==0.0.34). */
+.purr-webrtc .select-wrap {
+    position: static !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    left: auto !important;
+    bottom: auto !important;
+    transform: none !important;
+    margin: 0.5rem 0 0 !important;
+    opacity: 1 !important;
+    z-index: auto !important;
 }
-.mic-panel {
-    min-height: 168px;
-}
-.settings-panel {
-    justify-content: flex-end;
+.purr-webrtc .inset-icon {
+    display: none !important;
 }
 /* Decorative orange wave background. Pure CSS, non-interactive, and separate
    from the mic control so it can never render as a static circle. */
@@ -667,9 +704,26 @@ APP_CSS = """
 @media (prefers-reduced-motion: reduce) {
     .purr-wave span { animation: none; opacity: 0; }
 }
+/* Narrow screens: the rail reflows below the transcript and the transcript is
+   height-capped so the record control stays reachable. Page scroll is fine here. */
+@media (max-width: 768px) {
+    .purr-layout { flex-direction: column !important; flex-wrap: nowrap !important; }
+    .purr-layout > .transcript-pane,
+    .purr-layout > .control-rail { width: 100% !important; flex: none !important; }
+    .transcript-pane { min-height: 0; }
+    .transcript-box,
+    .transcript-box label,
+    .transcript-box .input-container { flex: none; }
+    .transcript-box textarea { height: 58vh !important; }
+    .control-rail {
+        padding-left: 0;
+        padding-top: 1rem;
+        border-left: none;
+        border-top: 1px solid var(--border-color-primary);
+    }
+}
 .purr-header,
-.transcript-box,
-.controls {
+.purr-layout {
     position: relative;
     z-index: 1;
 }
@@ -677,8 +731,8 @@ APP_CSS = """
 
 
 def build_ui() -> gr.Blocks:
-    """Assemble the app UI: transcript on top, controls pinned below."""
-    with gr.Blocks(css=APP_CSS, title="PURR") as demo:
+    """Assemble the app UI: a control rail beside a full-height transcript pane."""
+    with gr.Blocks(css=APP_CSS, title="PURR", fill_height=True) as demo:
         gr.HTML(
             "<div class='purr-wave'><span></span><span></span><span></span></div>",
             container=False,
@@ -690,9 +744,10 @@ def build_ui() -> gr.Blocks:
             "&middot; local Whisper/Moonshine</p>"
             "</div>"
         )
-        transcript.render()
-        with gr.Row(elem_classes=["controls"]):
-            with gr.Column(elem_classes=["mic-panel"], scale=2):
+        with gr.Row(scale=1, equal_height=False, elem_classes=["purr-layout"]):
+            with gr.Column(scale=4, elem_classes=["transcript-pane"]):
+                transcript.render()
+            with gr.Column(scale=1, min_width=220, elem_classes=["control-rail"]):
                 webrtc = WebRTC(
                     rtc_configuration=rtc_configuration,
                     mode="send-receive",
@@ -701,8 +756,8 @@ def build_ui() -> gr.Blocks:
                     pulse_color="var(--color-orange)",
                     full_screen=False,
                     show_label=False,
+                    elem_classes=["purr-webrtc"],
                 )
-            with gr.Column(elem_classes=["settings-panel"], scale=1):
                 mode_radio.render()
 
         webrtc.stream(

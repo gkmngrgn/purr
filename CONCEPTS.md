@@ -38,3 +38,6 @@ A no-op handler marked for GPU execution and bound to a UI event, whose only pur
 
 ### sdk_version / gradio pin coupling
 The invariant that the Space card's declared SDK version and the project's own Gradio dependency pin must name the same version. The Space build installs the declared SDK version into the same environment as the project's pins, so the two become a dependency conflict when they disagree.
+
+### WebRTC relay
+The relayed path that carries audio between the browser and the Space when a direct WebRTC connection cannot be made — the Space's firewall blocks direct connections, so audio needs a relay. Purr serves a public STUN configuration by default and relays through TURN only when relay credentials are configured; the Hugging Face token is never sent to a TURN endpoint.

@@ -22,6 +22,9 @@ The optional speech-enhancement stage that cleans an utterance with ai-coustics 
 ### Enhancement mode
 The user-facing choice between *enhanced* (run Quail enhancement before transcription) and *raw* (transcribe the microphone audio as-is). Raw reveals the fidelity the transcriber actually receives.
 
+### Microphone source
+The input device a recording streams from, chosen by the visitor in the control rail. The choice applies to the next recording, not the one in progress, and is only available once the browser has granted microphone access.
+
 ### Transcript
 The accumulated text output: the committed lines from finished utterances followed by the live partial. Enhancement is observed through the transcript rather than through audio playback, which is intentionally absent to avoid feedback.
 

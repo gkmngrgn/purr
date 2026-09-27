@@ -1,4 +1,4 @@
-"""Clean Transcribe: real-time speech-to-text on the HF Stack.
+"""Purr: real-time speech-to-text on the HF Stack.
 
 Pipeline:  mic -> FastRTC (WebRTC) -> Quail enhancement (optional) -> Whisper
 via Inference Providers -> transcript.
@@ -35,7 +35,7 @@ import gradio as gr
 from gradio.utils import get_space
 
 import librosa
-from fastrtc import AdditionalOutputs, ReplyOnPause, Stream, WebRTCData
+from fastrtc import AdditionalOutputs, ReplyOnPause, Stream, WebRTC, WebRTCData
 
 if TYPE_CHECKING:
     import aic_sdk as aic
@@ -483,48 +483,144 @@ def rtc_configuration() -> dict[str, Any]:
     }
 
 
+def _replace_transcript(_current: str, new_transcript: str) -> str:
+    """Replace the accumulated transcript with the newest value from the stream."""
+    return new_transcript
+
+
 mode_radio = gr.Radio(
     ["enhanced", "raw"],
     value="enhanced",
     label="Quail speech enhancement",
     info="enhanced: clean the mic audio with ai-coustics Quail before transcription.",
 )
-transcript = gr.Textbox(label="Transcript", lines=10, placeholder="Press and hold the mic button, speak, then release.")
+transcript = gr.Textbox(
+    label="Transcript",
+    placeholder="Press and hold the mic button, speak, then release.",
+    interactive=False,
+    lines=14,
+    max_lines=14,
+    elem_classes=["transcript-box"],
+)
 
+# The handler owns turn detection and config; the UI is built by hand below, so
+# no additional components are attached to this Stream (its generated layout is
+# discarded in favor of `build_ui`).
 stream = Stream(
     SpeechAwarePauseHandler(process, model=AICVadAdapter()),
     modality="audio",
     mode="send-receive",
-    additional_inputs=[mode_radio, transcript],
-    additional_outputs=[transcript],
-    additional_outputs_handler=lambda _webrtc_id, outputs: outputs,
     rtc_configuration=rtc_configuration,
     concurrency_limit=5 if is_space() else None,
     time_limit=90 if is_space() else None,
-    ui_args={
-        "title": "Clean Transcribe",
-        "subtitle": "Real-time speech-to-text: ai-coustics Quail enhancement + Whisper via HF Inference Providers",
-        "icon_button_color": "var(--color-green)",
-        "pulse_color": "var(--color-green)",
-    },
+    ui_args={"hide_title": True},
 )
 
 # ---------------------------------------------------------------------------
-# ZeroGPU startup probe (Space-only)
+# UI
 # ---------------------------------------------------------------------------
-# Free-tier Gradio Spaces run on ZeroGPU, whose startup scan requires at least
-# one Gradio event handler bound to a @spaces.GPU function. This app is
-# CPU-only (Quail runs on CPU, Whisper goes through HF Inference Providers),
-# so the probe is a no-op that is never invoked; it only satisfies the scan.
-if spaces is not None:
+# FastRTC's generated layout puts inputs in a left sidebar and the transcript in
+# a right sidebar, which buries the primary output. Build the Gradio Blocks by
+# hand instead: the transcript is the centered focus, and the mic control, the
+# enhancement setting, and the audio indicator sit together below it.
+APP_CSS = """
+.gradio-container { max-width: 980px !important; margin: 0 auto !important; }
+.purr-header { text-align: center; margin: 0.25rem 0 1.25rem; }
+.purr-header h1 {
+    margin: 0;
+    font-size: 3.25rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    line-height: 1.1;
+}
+.purr-header p {
+    margin: 0.5rem 0 0;
+    font-size: 1.05rem;
+    color: var(--body-text-color-subdued);
+}
+.transcript-box {
+    min-height: 46vh;
+}
+.transcript-box textarea {
+    min-height: 42vh !important;
+    font-size: 1.6rem !important;
+    line-height: 1.55 !important;
+    font-weight: 500 !important;
+    color: var(--body-text-color) !important;
+    -webkit-text-fill-color: var(--body-text-color) !important;
+    opacity: 1 !important;
+}
+.controls {
+    align-items: end;
+    gap: 1rem;
+    padding-top: 1rem;
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--border-color-primary);
+}
+.mic-panel {
+    min-height: 168px;
+}
+.settings-panel {
+    justify-content: flex-end;
+}
+"""
 
-    @spaces.GPU
-    def _zerogpu_startup_probe() -> None:
-        return None
 
-    with stream.ui:
-        _zerogpu_probe = gr.Button(visible=False)
-        _zerogpu_probe.click(fn=_zerogpu_startup_probe, inputs=None, outputs=None)
+def build_ui() -> gr.Blocks:
+    """Assemble the app UI: transcript on top, controls pinned below."""
+    with gr.Blocks(css=APP_CSS, title="PURR") as demo:
+        gr.HTML(
+            "<div class='purr-header'>"
+            "<h1>PURR</h1>"
+            "<p>Real-time speech-to-text &middot; ai-coustics Quail enhancement "
+            "&middot; Whisper via HF Inference Providers</p>"
+            "</div>"
+        )
+        transcript.render()
+        with gr.Row(elem_classes=["controls"]):
+            with gr.Column(elem_classes=["mic-panel"], scale=2):
+                webrtc = WebRTC(
+                    rtc_configuration=rtc_configuration,
+                    mode="send-receive",
+                    modality="audio",
+                    icon_button_color="var(--color-green)",
+                    pulse_color="var(--color-green)",
+                    full_screen=False,
+                    show_label=False,
+                )
+            with gr.Column(elem_classes=["settings-panel"], scale=1):
+                mode_radio.render()
+
+        webrtc.stream(
+            fn=stream.event_handler,
+            inputs=[webrtc, mode_radio, transcript],
+            outputs=[webrtc],
+            time_limit=stream.time_limit,
+            concurrency_limit=stream.concurrency_limit,
+        )
+        webrtc.on_additional_outputs(
+            _replace_transcript,
+            inputs=[transcript],
+            outputs=[transcript],
+            concurrency_limit=5 if is_space() else None,
+        )
+
+        # ZeroGPU startup probe (Space-only). Free-tier Gradio Spaces run on
+        # ZeroGPU, whose startup scan requires at least one Gradio event handler
+        # bound to a @spaces.GPU function. This app is CPU-only, so the probe is
+        # a no-op that is never invoked; it only satisfies the scan.
+        if spaces is not None:
+
+            @spaces.GPU
+            def _zerogpu_startup_probe() -> None:
+                return None
+
+            probe = gr.Button(visible=False)
+            probe.click(fn=_zerogpu_startup_probe, inputs=None, outputs=None)
+    return demo
+
+
+stream.ui = build_ui()
 
 
 if __name__ == "__main__":

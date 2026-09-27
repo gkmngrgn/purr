@@ -12,7 +12,7 @@ license: apache-2.0
 short_description: 'Real-time speech-to-text: Quail enhancement + Whisper'
 ---
 
-# Clean Transcribe
+# Purr
 
 🔗 **[Live demo on HF Spaces](https://huggingface.co/spaces/goedev/purr)**
 

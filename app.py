@@ -573,12 +573,59 @@ APP_CSS = """
 .settings-panel {
     justify-content: flex-end;
 }
+/* Decorative orange wave background. Pure CSS, non-interactive, and separate
+   from the mic control so it can never render as a static circle. */
+.purr-wave {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+.purr-wave::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(55% 45% at 50% 0%, rgba(249, 115, 22, 0.12), transparent 70%);
+}
+.purr-wave span {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 42vmax;
+    height: 42vmax;
+    margin: -21vmax 0 0 -21vmax;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(249, 115, 22, 0.22), rgba(249, 115, 22, 0) 62%);
+    opacity: 0;
+    animation: purr-wave 9s ease-out infinite;
+}
+.purr-wave span:nth-child(2) { animation-delay: 3s; }
+.purr-wave span:nth-child(3) { animation-delay: 6s; }
+@keyframes purr-wave {
+    0% { transform: scale(0.3); opacity: 0; }
+    18% { opacity: 1; }
+    100% { transform: scale(1.75); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .purr-wave span { animation: none; opacity: 0; }
+}
+.purr-header,
+.transcript-box,
+.controls {
+    position: relative;
+    z-index: 1;
+}
 """
 
 
 def build_ui() -> gr.Blocks:
     """Assemble the app UI: transcript on top, controls pinned below."""
     with gr.Blocks(css=APP_CSS, title="PURR") as demo:
+        gr.HTML(
+            "<div class='purr-wave'><span></span><span></span><span></span></div>",
+            container=False,
+        )
         gr.HTML(
             "<div class='purr-header'>"
             "<h1>PURR</h1>"

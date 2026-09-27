@@ -28,7 +28,30 @@ c = handler.copy()
 assert isinstance(c, app.SpeechAwarePauseHandler)
 assert isinstance(c.model, app.AICVadAdapter)
 assert c.model is not handler.model, "each connection must get its own detector"
+assert app.transcript.interactive is False, "transcript must be read-only"
+cfg = app.stream.ui.get_config_file()
+ids = {c["type"]: c["id"] for c in cfg["components"]}
+tx, radio, webrtc = ids["textbox"], ids["radio"], ids["webrtc"]
+deps = cfg["dependencies"]
+assert any(set(d.get("inputs") or []) >= {webrtc, radio, tx} for d in deps), "stream must take (webrtc, mode, transcript)"
+assert any((d.get("outputs") or []) == [tx] for d in deps), "transcript must be the stream output"
 print("constructed OK", type(app.stream).__name__)
+""")
+
+run("Space-mode binds the ZeroGPU probe to a Gradio event", """
+import sys, types
+
+class _FakeSpaces:
+    @staticmethod
+    def GPU(fn=None):
+        return fn if fn is not None else (lambda f: f)
+
+sys.modules["spaces"] = _FakeSpaces()
+
+import app
+names = [getattr(getattr(f, "fn", None), "__name__", "") for f in app.stream.ui.fns.values()]
+assert any(n == "_zerogpu_startup_probe" for n in names), names
+print("zerogpu probe bound OK")
 """)
 
 run("aic VAD adapter satisfies the detector contract (offline, no license)", """

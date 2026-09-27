@@ -48,13 +48,14 @@ if TYPE_CHECKING:
     from faster_whisper import WhisperModel
     from fastrtc.tracks import EmitType
 
-# Gradio 5.50 warns that `gr.Blocks(css=...)` will move to `Blocks.launch(css=...)`
-# in Gradio 6, but Gradio 6 is unreachable while fastrtc caps `gradio<6`, and the
-# replacement does not exist yet. Silence the known-benign warning for our Blocks
-# and for FastRTC's discarded default UI, which also passes `css`.
+# Gradio 5.50 warns that the `gr.Blocks(css=..., head=...)` parameters will move
+# to `Blocks.launch(...)` in Gradio 6, but Gradio 6 is unreachable while fastrtc
+# caps `gradio<6`, and the replacement does not exist yet. Silence the
+# known-benign warnings for our Blocks and for FastRTC's discarded default UI,
+# which also passes `css`.
 warnings.filterwarnings(
     "ignore",
-    message=r"The 'css' parameter in the Blocks constructor will be removed",
+    message=r"The '(css|js|head)' parameter in the Blocks constructor will be removed",
     category=DeprecationWarning,
 )
 
@@ -662,23 +663,33 @@ APP_CSS = """
     -webkit-text-fill-color: var(--body-text-color) !important;
     opacity: 1 !important;
 }
-/* Microphone-source picker: a distinct control, not an arrow inside the record button.
-   FastRTC renders it inside the WebRTC component, so it is reached by scoping CSS to
-   the component's own classes (pinned to fastrtc==0.0.34). */
+/* FastRTC's own source control is hidden: a trigger button plus a dropdown that
+   only mounts while open. The rail's purr-source control replaces it. Scoped to
+   the WebRTC component's class, pinned to fastrtc==0.0.34. */
+.purr-webrtc button[aria-label="select input source"],
 .purr-webrtc .select-wrap {
-    position: static !important;
-    display: block !important;
-    width: 100% !important;
-    max-width: none !important;
-    left: auto !important;
-    bottom: auto !important;
-    transform: none !important;
-    margin: 0.5rem 0 0 !important;
-    opacity: 1 !important;
-    z-index: auto !important;
-}
-.purr-webrtc .inset-icon {
     display: none !important;
+}
+/* Microphone-source control. Static markup, filled by the page script. */
+.purr-source-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.75rem;
+}
+.purr-source-wrap label {
+    font-size: var(--block-label-text-size);
+    font-weight: var(--block-label-text-weight);
+    color: var(--block-label-text-color);
+}
+.purr-source-wrap select {
+    width: 100%;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--input-border-color);
+    border-radius: var(--input-radius);
+    background: var(--input-background-fill);
+    color: var(--body-text-color);
+    font-size: var(--input-text-size);
 }
 /* Decorative orange wave background. Pure CSS, non-interactive, and separate
    from the mic control so it can never render as a static circle. */
@@ -744,9 +755,101 @@ APP_CSS = """
 """
 
 
+# Browser-side microphone-source control. Gradio and FastRTC expose no Python
+# device API, so the control is static markup filled by this page script, and the
+# chosen device is bound to the next recording by wrapping getUserMedia. Pinned to
+# fastrtc==0.0.34: FastRTC acquires the mic per recording start from
+# `navigator.mediaDevices.getUserMedia` and never re-applies constraints.
+SOURCE_SCRIPT = """
+<script>
+(function () {
+    if (window.__purrSourceHook) return;
+    window.__purrSourceHook = true;
+
+    var chosen = "";
+    var unlocked = false;
+    var select = null;
+
+    function render(devices) {
+        var mics = devices.filter(function (d) { return d.kind === "audioinput"; });
+        var labelled = mics.some(function (d) { return d.label; });
+        if (!select) return;
+        if (!mics.length || !labelled) {
+            select.disabled = true;
+            select.innerHTML =
+                "<option value=''>Grant microphone access to choose a device</option>";
+            return;
+        }
+        var prior = chosen || select.value;
+        select.innerHTML = "";
+        mics.forEach(function (d, i) {
+            var option = document.createElement("option");
+            option.value = d.deviceId;
+            option.textContent = d.label || ("Microphone " + (i + 1));
+            select.appendChild(option);
+        });
+        select.disabled = false;
+        if (prior && mics.some(function (d) { return d.deviceId === prior; })) {
+            select.value = prior;
+        }
+        chosen = select.value;
+    }
+
+    function refresh() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        navigator.mediaDevices.enumerateDevices().then(render).catch(function () {});
+    }
+
+    function attach(attempt) {
+        select = document.getElementById("purr-source");
+        if (!select) {
+            if (attempt < 50) setTimeout(function () { attach(attempt + 1); }, 200);
+            return;
+        }
+        select.addEventListener("change", function () { chosen = select.value; });
+        refresh();
+    }
+
+    var media = navigator.mediaDevices;
+    var realGUM = media && media.getUserMedia;
+    if (realGUM) {
+        media.getUserMedia = function (constraints) {
+            var audioOnly = constraints && constraints.audio && !constraints.video;
+            if (!chosen || !audioOnly) {
+                return realGUM.call(media, constraints).then(function (stream) {
+                    if (!unlocked) { unlocked = true; refresh(); }
+                    return stream;
+                });
+            }
+            var base = typeof constraints.audio === "object" ? constraints.audio : {};
+            var pinned = Object.assign({}, constraints, {
+                audio: Object.assign({}, base, { deviceId: { exact: chosen } })
+            });
+            return realGUM.call(media, pinned).then(function (stream) {
+                if (!unlocked) { unlocked = true; refresh(); }
+                return stream;
+            }).catch(function (error) {
+                if (!error || (error.name !== "OverconstrainedError" && error.name !== "NotFoundError")) {
+                    throw error;
+                }
+                chosen = "";
+                var fallback = Object.assign({}, constraints, { audio: Object.assign({}, base) });
+                delete fallback.audio.deviceId;
+                return realGUM.call(media, fallback);
+            });
+        };
+    }
+    if (media && media.addEventListener) media.addEventListener("devicechange", refresh);
+    attach(0);
+    refresh();
+})();
+</script>
+"""
+
+
 def build_ui() -> gr.Blocks:
     """Assemble the app UI: a control rail beside a full-height transcript pane."""
-    with gr.Blocks(css=APP_CSS, title="PURR", fill_height=True) as demo:
+    with gr.Blocks(css=APP_CSS, head=SOURCE_SCRIPT, title="PURR", fill_height=True) as demo:
         gr.HTML(
             "<div class='purr-wave'><span></span><span></span><span></span></div>",
             container=False,
@@ -773,6 +876,15 @@ def build_ui() -> gr.Blocks:
                     elem_classes=["purr-webrtc"],
                 )
                 mode_radio.render()
+                gr.HTML(
+                    "<div class='purr-source-wrap'>"
+                    "<label for='purr-source'>Microphone source</label>"
+                    "<select id='purr-source' aria-label='Microphone source' disabled>"
+                    "<option value=''>Grant microphone access to choose a device</option>"
+                    "</select>"
+                    "</div>",
+                    container=False,
+                )
 
         webrtc.stream(
             fn=stream.event_handler,

@@ -64,10 +64,15 @@ assert _nested(rail, radio), "enhancement selector must sit in the control rail"
 for sel in (".purr-layout", ".transcript-pane > .form", ".purr-webrtc .select-wrap", "@media (max-width: 768px)"):
     assert sel in app.APP_CSS, f"APP_CSS missing {sel}"
 assert 'button[aria-label="select input source"]' in app.APP_CSS, "FastRTC source trigger not hidden"
-source = next((c for c in comps if c["type"] == "html" and "purr-source" in (c["props"].get("value") or "")), None)
-assert source is not None, "source control missing from the markup"
+assert ".purr-webrtc .inset-icon" not in app.APP_CSS, "interim restyle should be gone"
+assert "position: static !important" not in app.APP_CSS, "interim restyle should be gone"
+source = next((c for c in comps if c["type"] == "html" and "<select id='purr-source'" in (c["props"].get("value") or "")), None)
+assert source is not None, "source select missing from the markup"
 assert _nested(rail, source["id"]), "source control must sit in the control rail"
-assert "__purrSourceHook" in (cfg.get("head") or ""), "source script not injected"
+assert "Grant microphone access" in source["props"]["value"], "source hint state missing"
+for marker in ("media.getUserMedia = function", "enumerateDevices", "OverconstrainedError", "devicechange"):
+    assert marker in app.SOURCE_SCRIPT, f"source script missing {marker}"
+assert "window.__purrSourceHook" in (cfg.get("head") or ""), "source script not injected"
 deps = cfg["dependencies"]
 assert any(set(d.get("inputs") or []) >= {webrtc, radio} for d in deps), "stream must take (webrtc, mode)"
 assert any((d.get("outputs") or []) == [tx] for d in deps), "transcript must be the stream output"

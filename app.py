@@ -763,25 +763,23 @@ APP_CSS = """
 SOURCE_SCRIPT = """
 <script>
 (function () {
-    if (window.__purrSourceHook) return;
-    window.__purrSourceHook = true;
-
+    var HINT = "<option value=''>Grant microphone access to choose a device</option>";
+    var DEFAULT_OPTION = "<option value=''>Browser default</option>";
     var chosen = "";
     var unlocked = false;
     var select = null;
 
     function render(devices) {
+        if (!select) return;
         var mics = devices.filter(function (d) { return d.kind === "audioinput"; });
         var labelled = mics.some(function (d) { return d.label; });
-        if (!select) return;
         if (!mics.length || !labelled) {
             select.disabled = true;
-            select.innerHTML =
-                "<option value=''>Grant microphone access to choose a device</option>";
+            select.innerHTML = HINT;
             return;
         }
-        var prior = chosen || select.value;
-        select.innerHTML = "";
+        var prior = chosen;
+        select.innerHTML = DEFAULT_OPTION;
         mics.forEach(function (d, i) {
             var option = document.createElement("option");
             option.value = d.deviceId;
@@ -789,10 +787,7 @@ SOURCE_SCRIPT = """
             select.appendChild(option);
         });
         select.disabled = false;
-        if (prior && mics.some(function (d) { return d.deviceId === prior; })) {
-            select.value = prior;
-        }
-        chosen = select.value;
+        select.value = prior && mics.some(function (d) { return d.deviceId === prior; }) ? prior : "";
     }
 
     function refresh() {
@@ -800,24 +795,32 @@ SOURCE_SCRIPT = """
         navigator.mediaDevices.enumerateDevices().then(render).catch(function () {});
     }
 
-    function attach(attempt) {
-        select = document.getElementById("purr-source");
-        if (!select) {
-            if (attempt < 50) setTimeout(function () { attach(attempt + 1); }, 200);
-            return;
-        }
+    function maybeUnlock() {
+        if (!unlocked) { unlocked = true; refresh(); }
+    }
+
+    function bind() {
+        if (!select || select.__purrBound) return;
+        select.__purrBound = true;
         select.addEventListener("change", function () { chosen = select.value; });
         refresh();
     }
 
+    function attach(attempt) {
+        select = document.getElementById("purr-source");
+        if (select) { bind(); return; }
+        if (attempt < 400) setTimeout(function () { attach(attempt + 1); }, 250);
+    }
+
     var media = navigator.mediaDevices;
     var realGUM = media && media.getUserMedia;
-    if (realGUM) {
+    if (realGUM && !window.__purrSourceHook) {
+        window.__purrSourceHook = true;
         media.getUserMedia = function (constraints) {
             var audioOnly = constraints && constraints.audio && !constraints.video;
             if (!chosen || !audioOnly) {
                 return realGUM.call(media, constraints).then(function (stream) {
-                    if (!unlocked) { unlocked = true; refresh(); }
+                    maybeUnlock();
                     return stream;
                 });
             }
@@ -826,20 +829,21 @@ SOURCE_SCRIPT = """
                 audio: Object.assign({}, base, { deviceId: { exact: chosen } })
             });
             return realGUM.call(media, pinned).then(function (stream) {
-                if (!unlocked) { unlocked = true; refresh(); }
+                maybeUnlock();
                 return stream;
             }).catch(function (error) {
                 if (!error || (error.name !== "OverconstrainedError" && error.name !== "NotFoundError")) {
                     throw error;
                 }
                 chosen = "";
+                if (select) select.value = "";
                 var fallback = Object.assign({}, constraints, { audio: Object.assign({}, base) });
                 delete fallback.audio.deviceId;
                 return realGUM.call(media, fallback);
             });
         };
+        if (media.addEventListener) media.addEventListener("devicechange", refresh);
     }
-    if (media && media.addEventListener) media.addEventListener("devicechange", refresh);
     attach(0);
     refresh();
 })();

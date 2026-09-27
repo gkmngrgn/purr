@@ -610,8 +610,8 @@ def build_ui() -> gr.Blocks:
                     rtc_configuration=rtc_configuration,
                     mode="send-receive",
                     modality="audio",
-                    icon_button_color="var(--color-green)",
-                    pulse_color="var(--color-green)",
+                    icon_button_color="var(--color-orange)",
+                    pulse_color="var(--color-orange)",
                     full_screen=False,
                     show_label=False,
                 )

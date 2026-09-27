@@ -670,10 +670,9 @@ APP_CSS = """
 .purr-webrtc .select-wrap {
     display: none !important;
 }
-/* Breathing room around the mic control: inset the wave and the record pill
-   from the panel edges. */
-.purr-webrtc {
-    padding: 0.85rem;
+/* Roomier record pill: more padding inside the button. Pinned to fastrtc==0.0.34. */
+.purr-webrtc .button-wrap {
+    padding: 0.5rem 1rem !important;
 }
 /* Microphone-source control. Static markup, filled by the page script. */
 .purr-source-wrap {

@@ -670,6 +670,11 @@ APP_CSS = """
 .purr-webrtc .select-wrap {
     display: none !important;
 }
+/* Breathing room around the mic control: inset the wave and the record pill
+   from the panel edges. */
+.purr-webrtc {
+    padding: 0.85rem;
+}
 /* Microphone-source control. Static markup, filled by the page script. */
 .purr-source-wrap {
     display: flex;
